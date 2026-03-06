@@ -181,12 +181,16 @@ def main() -> None:
 
             service_id = _get_service_id()
 
-            # Resolve advertise address — 0.0.0.0/:: are not routable
-            if args.http_host in ("0.0.0.0", "::"):
-                advertise_host = socket.gethostname()
-            else:
-                advertise_host = args.http_host
-            service_url = f"http://{advertise_host}:{args.http_port}"
+            # Resolve advertise URL — env override for Docker/K8s,
+            # otherwise derive from bind address.
+            advertise_url = os.environ.get("TURNSTONE_CHANNEL_ADVERTISE_URL", "").strip()
+            if not advertise_url:
+                if args.http_host in ("0.0.0.0", "::"):
+                    advertise_host = socket.gethostname()
+                else:
+                    advertise_host = args.http_host
+                advertise_url = f"http://{advertise_host}:{args.http_port}"
+            service_url = advertise_url
 
             # Register in service registry
             storage.register_service("channel", service_id, service_url)

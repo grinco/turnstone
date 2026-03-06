@@ -213,6 +213,7 @@ services:
         turnstone-channel
         --redis-host=redis
         --redis-port=6379
+        --http-host=0.0.0.0
         $${TURNSTONE_DISCORD_GUILD:+--discord-guild $$TURNSTONE_DISCORD_GUILD}
     environment:
       - TURNSTONE_DISCORD_TOKEN=${TURNSTONE_DISCORD_TOKEN:-}
@@ -221,6 +222,7 @@ services:
       - TURNSTONE_JWT_SECRET=${TURNSTONE_JWT_SECRET:-}
       - TURNSTONE_DB_BACKEND=${DB_BACKEND:-sqlite}
       - TURNSTONE_DB_URL=${DATABASE_URL:-}
+      - TURNSTONE_CHANNEL_ADVERTISE_URL=http://channel:8091
     networks:
       - turnstone-net
     depends_on:

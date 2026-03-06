@@ -1401,7 +1401,7 @@ def main() -> None:
 
         proxy_token_mgr = ServiceTokenManager(
             user_id="console-proxy",
-            scopes=frozenset({"write"}),
+            scopes=frozenset({"read", "write", "approve"}),
             source="console",
             secret=jwt_secret,
             audience=JWT_AUD_SERVER,
