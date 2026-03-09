@@ -150,7 +150,7 @@ class ClusterCollector:
                         "state": "idle",
                         "node": node_id,
                         "server_url": node.server_url,
-                        "title": "",
+                        "title": data.get("title", ""),
                         "tokens": 0,
                         "context_ratio": 0.0,
                         "activity": "",
