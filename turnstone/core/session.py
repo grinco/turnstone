@@ -2660,8 +2660,13 @@ class ChatSession:
                 "questions — execute the work as described in the prompt."
             ),
         }
-        agent_messages = list(self._agent_system_messages) + [
-            task_instruction,
+        # Task agent gets the base system prompt (tool patterns) merged
+        # with its own identity in a single system message. No conversation
+        # history — it's an autonomous sub-agent. Merged to avoid
+        # multi-system-message errors on models like Qwen.
+        base = self._agent_system_messages[0]["content"] if self._agent_system_messages else ""
+        agent_messages = [
+            {"role": "system", "content": base + "\n\n" + task_instruction["content"]},
             {"role": "user", "content": prompt},
         ]
         try:
@@ -2710,8 +2715,11 @@ class ChatSession:
                                 prior_plan_msgs = [msg, self.messages[j]]
                                 break
 
-        agent_messages = list(self._agent_system_messages)
-        agent_messages.append({"role": "system", "content": self._PLAN_IDENTITY})
+        # Plan agent gets its own identity only — no main session system
+        # prompt or conversation history. It's an autonomous sub-agent.
+        agent_messages: list[dict[str, Any]] = [
+            {"role": "system", "content": self._PLAN_IDENTITY},
+        ]
         agent_messages.extend(prior_plan_msgs)
         agent_messages.append({"role": "user", "content": prompt})
 
