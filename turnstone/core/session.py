@@ -2559,7 +2559,7 @@ class ChatSession:
                     # Find the last assistant content we have
                     for msg in reversed(agent_messages):
                         if msg.get("role") == "assistant" and msg.get("content"):
-                            return msg["content"]
+                            return str(msg["content"])
                     return f"({label} stopped: context limit exceeded)"
                 raise
 
