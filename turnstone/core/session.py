@@ -405,6 +405,17 @@ class ChatSession:
             if skill_data:
                 self._skill_content = _render_template(skill_data["content"], context)
                 self._check_skill_budget(skill_data)
+                if skill_data.get("scan_status") in ("high", "critical"):
+                    scan_tier = skill_data["scan_status"]
+                    log.warning(
+                        "skill.high_risk_loaded",
+                        skill=skill_data["name"],
+                        scan_status=scan_tier,
+                    )
+                    self.ui.on_info(
+                        f"⚠ Skill '{skill_data['name']}' has scan status: {scan_tier}. "
+                        f"Review scan report in admin panel before enabling in production."
+                    )
             else:
                 log.warning("skill.not_found", name=self._skill_name)
                 self._skill_content = None
@@ -1112,14 +1123,17 @@ class ChatSession:
                         if isinstance(output, str):
                             output = self._evaluate_output(tc_id, output, _tc_names.get(tc_id, ""))
                         elif isinstance(output, list):
-                            # Image/structured output — evaluate text parts only
-                            _text = " ".join(
-                                p.get("text", "")
-                                for p in output
-                                if isinstance(p, dict) and p.get("type") == "text"
-                            )
-                            if _text:
-                                self._evaluate_output(tc_id, _text, _tc_names.get(tc_id, ""))
+                            # Image/structured output — evaluate each text part
+                            # independently so credentials in any part get redacted.
+                            for p in output:
+                                if (
+                                    isinstance(p, dict)
+                                    and p.get("type") == "text"
+                                    and p.get("text")
+                                ):
+                                    p["text"] = self._evaluate_output(
+                                        tc_id, p["text"], _tc_names.get(tc_id, "")
+                                    )
 
                     tool_msg: dict[str, Any] = {
                         "role": "tool",
@@ -1900,7 +1914,11 @@ class ChatSession:
             flags=assessment.flags,
         )
         try:
-            self.ui.on_output_warning(call_id, assessment.to_dict())
+            d = assessment.to_dict()  # excludes sanitized by default
+            d["func_name"] = func_name
+            d["output_length"] = len(output)
+            d["redacted"] = assessment.sanitized is not None
+            self.ui.on_output_warning(call_id, d)
         except Exception:
             log.debug("output_guard.callback_failed", exc_info=True)
 
