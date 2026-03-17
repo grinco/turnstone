@@ -1873,9 +1873,24 @@ class ChatSession:
                 it["func_args"] = {"command": it.get("command", "")}
             elif name in ("write_file", "edit_file", "read_file"):
                 it["func_args"] = {"path": it.get("path", "")}
+            elif name == "web_fetch":
+                it["func_args"] = {"url": it.get("url", ""), "question": it.get("question", "")}
+            elif name == "web_search":
+                it["func_args"] = {"query": it.get("query", ""), "topic": it.get("topic", "")}
+            elif name == "load_skill":
+                it["func_args"] = {"action": it.get("action", ""), "name": it.get("name", "")}
+            elif name == "watch":
+                it["func_args"] = {
+                    "action": it.get("action", ""),
+                    "command": it.get("command", ""),
+                    "name": it.get("watch_name", ""),
+                }
+            elif name == "notify":
+                it["func_args"] = {"message": it.get("message", "")[:200]}
+            elif name == "task":
+                it["func_args"] = {"prompt": it.get("prompt", "")[:200]}
             elif it.get("mcp_args"):
                 it["func_args"] = it["mcp_args"]
-            # Other tools: func_args stays absent → judge defaults to {}
 
         def _on_verdict(verdict: object) -> None:
             """Callback from the daemon judge thread."""
