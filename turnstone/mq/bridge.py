@@ -85,6 +85,7 @@ class Bridge:
         self._approval_timeout = approval_timeout
         self._prefix = prefix
         self._node_id = node_id  # resolved in run() from server /health
+        self._server_max_ws: int = 10  # resolved in _fetch_node_id() from server /health
         self._heartbeat_ttl = heartbeat_ttl
         self._started_at = time.time()
         self._auth_token = auth_token
@@ -140,6 +141,15 @@ class Bridge:
 
     # -- public entry point --------------------------------------------------
 
+    def _fetch_server_metadata(self) -> None:
+        """Fetch max_ws from server /health (best-effort, non-blocking)."""
+        try:
+            resp = self._http.get("/health")
+            if resp.status_code == 200:
+                self._server_max_ws = resp.json().get("max_ws", 10)
+        except Exception:
+            log.debug("Failed to fetch server metadata", exc_info=True)
+
     def _fetch_node_id(self) -> str:
         """Retrieve node_id from server /health with capped exponential backoff.
 
@@ -161,6 +171,7 @@ class Bridge:
                 data = resp.json()
                 nid = data.get("node_id", "")
                 if nid:
+                    self._server_max_ws = data.get("max_ws", 10)
                     return str(nid)
                 log.warning("Server /health missing node_id (attempt %d)", attempt)
             except SystemExit:
@@ -178,10 +189,18 @@ class Bridge:
         """Block until shutdown (KeyboardInterrupt)."""
         if not self._node_id:
             self._node_id = self._fetch_node_id()
+        else:
+            # node_id was pre-set — still need to fetch max_ws from server
+            self._fetch_server_metadata()
         from turnstone.core.log import ctx_node_id
 
         ctx_node_id.set(self._node_id)
-        log.info("Bridge starting — node=%s server=%s", self._node_id, self._server_url)
+        log.info(
+            "Bridge starting — node=%s server=%s max_ws=%d",
+            self._node_id,
+            self._server_url,
+            self._server_max_ws,
+        )
         self._recover_workstreams()
 
         heartbeat_t = threading.Thread(
@@ -879,7 +898,11 @@ class Bridge:
         while self._running:
             self._broker.register_node(
                 self._node_id,
-                {"server_url": self._server_url, "started": self._started_at},
+                {
+                    "server_url": self._server_url,
+                    "started": self._started_at,
+                    "max_ws": self._server_max_ws,
+                },
                 ttl=self._heartbeat_ttl,
             )
             time.sleep(self._heartbeat_ttl / 2)
