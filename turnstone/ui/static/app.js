@@ -1338,6 +1338,30 @@ function _renderLayoutNode(node, container) {
   setupDragHandle(handle, node, [child0, child1]);
 }
 
+function _dragBounds(node, handle) {
+  // Compute min/max ratio from container size and CSS min dimensions
+  var container = handle.parentElement;
+  var totalSize =
+    node.direction === "horizontal"
+      ? container.clientWidth
+      : container.clientHeight;
+  var minPx = node.direction === "horizontal" ? 200 : 150; // match CSS min-width/min-height
+  var handlePx = 4;
+  var usable = totalSize - handlePx;
+  var minRatio = usable > 0 ? Math.max(0.05, minPx / usable) : 0.1;
+  var maxRatio = usable > 0 ? Math.min(0.95, 1 - minPx / usable) : 0.9;
+  return { minRatio: minRatio, maxRatio: maxRatio, totalSize: totalSize };
+}
+
+function _applyRatio(node, children, handle, ratio) {
+  node.ratio = ratio;
+  children[0].style.flex = String(ratio);
+  children[1].style.flex = String(1 - ratio);
+  if (handle) {
+    handle.setAttribute("aria-valuenow", Math.round(ratio * 100));
+  }
+}
+
 function setupDragHandle(handle, node, children) {
   handle.addEventListener("pointerdown", function (e) {
     if (e.button !== 0 && e.pointerType === "mouse") return;
@@ -1345,12 +1369,8 @@ function setupDragHandle(handle, node, children) {
     handle.setPointerCapture(e.pointerId);
     handle.classList.add("dragging");
     var startRatio = node.ratio;
-    var container = handle.parentElement;
+    var bounds = _dragBounds(node, handle);
     var startPos = node.direction === "horizontal" ? e.clientX : e.clientY;
-    var totalSize =
-      node.direction === "horizontal"
-        ? container.clientWidth
-        : container.clientHeight;
     document.body.style.cursor =
       node.direction === "horizontal" ? "col-resize" : "row-resize";
     document.body.style.userSelect = "none";
@@ -1359,12 +1379,10 @@ function setupDragHandle(handle, node, children) {
       var delta =
         (node.direction === "horizontal" ? e2.clientX : e2.clientY) - startPos;
       var newRatio = Math.max(
-        0.1,
-        Math.min(0.9, startRatio + delta / totalSize),
+        bounds.minRatio,
+        Math.min(bounds.maxRatio, startRatio + delta / bounds.totalSize),
       );
-      node.ratio = newRatio;
-      children[0].style.flex = String(newRatio);
-      children[1].style.flex = String(1 - newRatio);
+      _applyRatio(node, children, handle, newRatio);
     };
     var onUp = function () {
       handle.classList.remove("dragging");
@@ -1382,18 +1400,20 @@ function setupDragHandle(handle, node, children) {
 
   // Keyboard resizing (arrow keys)
   handle.addEventListener("keydown", function (e) {
+    var bounds = _dragBounds(node, handle);
     var step = e.shiftKey ? 0.1 : 0.02;
     var delta = 0;
     if (e.key === "ArrowRight" || e.key === "ArrowDown") delta = step;
     else if (e.key === "ArrowLeft" || e.key === "ArrowUp") delta = -step;
-    else if (e.key === "Home") delta = -(node.ratio - 0.1);
-    else if (e.key === "End") delta = 0.9 - node.ratio;
+    else if (e.key === "Home") delta = -(node.ratio - bounds.minRatio);
+    else if (e.key === "End") delta = bounds.maxRatio - node.ratio;
     else return;
     e.preventDefault();
-    node.ratio = Math.max(0.1, Math.min(0.9, node.ratio + delta));
-    children[0].style.flex = String(node.ratio);
-    children[1].style.flex = String(1 - node.ratio);
-    handle.setAttribute("aria-valuenow", Math.round(node.ratio * 100));
+    var newRatio = Math.max(
+      bounds.minRatio,
+      Math.min(bounds.maxRatio, node.ratio + delta),
+    );
+    _applyRatio(node, children, handle, newRatio);
     saveLayout();
   });
 }
