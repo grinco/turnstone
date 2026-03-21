@@ -5,9 +5,11 @@
 [![Python](https://img.shields.io/pypi/pyversions/turnstone)](https://pypi.org/project/turnstone/)
 [![License](https://img.shields.io/badge/license-BSL--1.1-blue)](LICENSE)
 
-Multi-node AI orchestration platform. Deploy tool-using AI agents across a cluster of servers, driven by message queues or interactive interfaces.
+Experimental multi-node AI orchestration platform. Deploy tool-using AI agents across a cluster of servers, driven by message queues or interactive interfaces.
 
-Named after the [Ruddy Turnstone](https://en.wikipedia.org/wiki/Ruddy_turnstone) — a bird that flips rocks to expose what's hiding underneath.
+> **Beta — Use at your own risk.** Turnstone is under active development and has not reached a stable release. APIs, configuration formats, and database schemas may change between versions without migration paths. We make no guarantees of determinism, reliability, or backward compatibility. Evaluate thoroughly before deploying to any environment where these properties matter.
+
+Named after the [Ruddy Turnstone](https://en.wikipedia.org/wiki/Ruddy_turnstone) (*Arenaria interpres*) — a shorebird that flips stones to discover what's hiding underneath.
 
 ## What it does
 
