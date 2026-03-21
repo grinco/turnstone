@@ -1112,6 +1112,19 @@ function updatePaneHeaders() {
   } else {
     root.classList.remove("multi-pane");
   }
+  // Hide tab-bar split button when already in multi-pane mode
+  var splitBtn = document.getElementById("split-btn");
+  if (splitBtn) {
+    if (leafCount > 1) {
+      splitBtn.classList.add("hidden");
+    } else {
+      splitBtn.classList.remove("hidden");
+    }
+  }
+}
+
+function splitFocusedPane() {
+  if (focusedPaneId) splitPane(focusedPaneId, "horizontal");
 }
 
 // --- Tree helpers ---
@@ -1860,10 +1873,11 @@ document
 // ===========================================================================
 
 var tabBar = document.getElementById("tab-bar");
+var tabList = document.getElementById("tab-list");
 var newTabBtn = document.getElementById("new-tab-btn");
 
 function renderTabBar() {
-  tabBar.querySelectorAll(".ws-tab").forEach(function (t) {
+  tabList.querySelectorAll(".ws-tab").forEach(function (t) {
     t.remove();
   });
 
@@ -1910,7 +1924,7 @@ function renderTabBar() {
       tab.appendChild(close);
     }
 
-    tabBar.insertBefore(tab, newTabBtn);
+    tabList.appendChild(tab);
   });
 }
 
