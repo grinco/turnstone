@@ -131,6 +131,19 @@ class StorageBackend(Protocol):
         """Search structured memories by query. Returns matching memory dicts."""
         ...
 
+    def touch_structured_memory(self, name: str, scope: str, scope_id: str) -> bool:
+        """Bump last_accessed and increment access_count. Returns True if found."""
+        ...
+
+    def touch_structured_memories(self, keys: list[tuple[str, str, str]]) -> int:
+        """Batch-touch multiple memories.
+
+        Each key is ``(name, scope, scope_id)``.  Callers should deduplicate
+        before calling; each key increments ``access_count`` once per call.
+        Returns count of rows found and updated.
+        """
+        ...
+
     def count_structured_memories(
         self, mem_type: str = "", scope: str = "", scope_id: str = ""
     ) -> int:
