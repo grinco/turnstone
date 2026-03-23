@@ -4880,8 +4880,9 @@ def main() -> None:
         help="Bearer token for polling turnstone-server nodes (default: $TURNSTONE_AUTH_TOKEN)",
     )
 
-    from turnstone.core.config import apply_config
+    from turnstone.core.config import add_config_arg, apply_config
 
+    add_config_arg(parser)
     apply_config(parser, ["console", "redis", "auth"])
     args = parser.parse_args()
 

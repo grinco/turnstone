@@ -973,8 +973,9 @@ def main() -> None:
         default=0.7,
         help="Confidence threshold for judge (default: 0.7)",
     )
-    from turnstone.core.config import apply_config
+    from turnstone.core.config import add_config_arg, apply_config
 
+    add_config_arg(parser)
     apply_config(
         parser,
         ["api", "model", "session", "tools", "console", "auth", "mcp", "database", "judge"],

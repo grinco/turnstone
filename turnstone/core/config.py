@@ -1,11 +1,17 @@
 """Unified configuration for turnstone.
 
-Loads ``~/.config/turnstone/config.toml`` and applies values as argparse defaults.
-Precedence: CLI args > env vars > config file > hardcoded defaults.
+Loads config.toml and applies values as argparse defaults.
+Precedence: CLI args > config file > hardcoded defaults.
+
+Config file resolution:
+  1. ``--config PATH`` CLI flag (via ``add_config_arg`` pre-parser)
+  2. ``$TURNSTONE_CONFIG`` environment variable
+  3. ``~/.config/turnstone/config.toml`` (default)
 """
 
 from __future__ import annotations
 
+import os
 import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -18,10 +24,34 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 CONFIG_DIR = Path("~/.config/turnstone").expanduser()
-CONFIG_PATH = CONFIG_DIR / "config.toml"
+_DEFAULT_CONFIG_PATH = CONFIG_DIR / "config.toml"
+
+# Resolved config path — set by set_config_path() or $TURNSTONE_CONFIG
+_config_path: Path | None = None
 
 # Cache: None = not loaded yet, {} = loaded but empty/missing
 _cache: dict[str, Any] | None = None
+
+
+def _resolve_config_path() -> Path:
+    """Return the effective config file path."""
+    if _config_path is not None:
+        return _config_path
+    env = os.environ.get("TURNSTONE_CONFIG", "").strip()
+    if env:
+        return Path(env).expanduser()
+    return _DEFAULT_CONFIG_PATH
+
+
+def set_config_path(path: str) -> None:
+    """Override the config file path.
+
+    Invalidates the cache so subsequent ``load_config()`` calls re-read
+    from the new path.  Typically called from ``add_config_arg()``.
+    """
+    global _config_path, _cache
+    _config_path = Path(path).expanduser()
+    _cache = None  # invalidate cache so next load_config() re-reads
 
 
 def load_config(section: str | None = None) -> dict[str, Any]:
@@ -33,11 +63,12 @@ def load_config(section: str | None = None) -> dict[str, Any]:
     global _cache
     if _cache is None:
         _cache = {}
-        if CONFIG_PATH.is_file():
+        cfg_path = _resolve_config_path()
+        if cfg_path.is_file():
             try:
-                _cache = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                _cache = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
             except Exception as exc:
-                log.warning("Failed to parse %s: %s", CONFIG_PATH, exc)
+                log.warning("Failed to parse %s: %s", cfg_path, exc)
     if section:
         result = _cache.get(section, {})
         return result if isinstance(result, dict) else {}
@@ -157,8 +188,6 @@ def get_tavily_key() -> str | None:
 
     Precedence: config.toml [api] tavily_key -> $TAVILY_API_KEY
     """
-    import os
-
     global _tavily_key, _tavily_key_loaded
     if _tavily_key_loaded:
         return _tavily_key
@@ -201,6 +230,29 @@ def apply_config(parser: argparse.ArgumentParser, sections: list[str]) -> None:
                 defaults[argparse_dest] = section_data[config_key]
     if defaults:
         parser.set_defaults(**defaults)
+
+
+def add_config_arg(parser: argparse.ArgumentParser) -> None:
+    """Add ``--config`` to *parser* and resolve the path before returning.
+
+    Uses a separate pre-parser (``add_help=False``) so ``--help`` on the
+    main parser still works and shows config-derived defaults.
+    """
+    import argparse as _ap
+    import sys
+
+    parser.add_argument(
+        "--config",
+        default=None,
+        metavar="PATH",
+        help="Path to config.toml (default: $TURNSTONE_CONFIG or ~/.config/turnstone/config.toml)",
+    )
+    # Pre-parse only --config without intercepting --help
+    pre = _ap.ArgumentParser(add_help=False)
+    pre.add_argument("--config", default=None)
+    pre_args, _ = pre.parse_known_args(sys.argv[1:])
+    if pre_args.config:
+        set_config_path(pre_args.config)
 
 
 def warn_migrated_settings() -> None:

@@ -1010,8 +1010,9 @@ def main() -> None:
         default=os.environ.get("TURNSTONE_AUTH_TOKEN", ""),
         help="Bearer token for authenticating to turnstone-server (default: $TURNSTONE_AUTH_TOKEN)",
     )
-    from turnstone.core.config import apply_config
+    from turnstone.core.config import add_config_arg, apply_config
 
+    add_config_arg(parser)
     apply_config(parser, ["bridge", "redis", "auth"])
     args = parser.parse_args()
 

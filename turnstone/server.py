@@ -2051,8 +2051,9 @@ def main() -> None:
     from turnstone.core.log import add_log_args
 
     add_log_args(parser)
-    from turnstone.core.config import apply_config
+    from turnstone.core.config import add_config_arg, apply_config
 
+    add_config_arg(parser)
     # Only load bootstrap sections from config.toml — all other settings
     # are managed by ConfigStore (database-backed) after storage init.
     apply_config(parser, ["api", "server", "database"])

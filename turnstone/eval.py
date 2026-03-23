@@ -1861,8 +1861,9 @@ def main() -> None:
         action="store_true",
         help="Show detailed per-turn logging (API calls, tool args, results)",
     )
-    from turnstone.core.config import apply_config
+    from turnstone.core.config import add_config_arg, apply_config
 
+    add_config_arg(parser)
     apply_config(parser, ["api", "model"])
     args = parser.parse_args()
 
