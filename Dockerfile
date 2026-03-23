@@ -25,12 +25,12 @@ ENV UV_COMPILE_BYTECODE=1
 # Install dependencies first (cached layer — only re-runs when deps change)
 COPY pyproject.toml uv.lock README.md LICENSE ./
 RUN uv sync --frozen --no-install-project --no-dev \
-    --extra mq --extra console --extra sim --extra postgres --extra discord --extra anthropic
+    --extra mq --extra console --extra sim --extra postgres --extra discord --extra anthropic --extra ddg
 
 # Install the project itself
 COPY turnstone/ turnstone/
 RUN uv sync --frozen --no-dev \
-    --extra mq --extra console --extra sim --extra postgres --extra discord --extra anthropic
+    --extra mq --extra console --extra sim --extra postgres --extra discord --extra anthropic --extra ddg
 
 # Add venv to PATH so entry points are found
 ENV PATH="/app/.venv/bin:$PATH"
