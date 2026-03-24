@@ -27,6 +27,7 @@ import time
 from collections.abc import Iterator
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -64,6 +65,20 @@ RED = "\033[31m"
 YELLOW = "\033[33m"
 CYAN = "\033[36m"
 BOLD = "\033[1m"
+
+
+@dataclass
+class EvolutionNode:
+    """A node in the prompt evolution tree (UCB-based search)."""
+
+    node_id: int
+    parent_id: int | None
+    prompt: str
+    score: float = 0.0
+    visit_count: int = 0
+    children: list[int] = field(default_factory=list)
+    iteration: int = 0
+    optimizer_system: str = ""
 
 
 class NullUI:
@@ -1289,6 +1304,7 @@ def _propose_prompt_modification(
     history: list[dict[str, Any]],
     optimizer_system: str = OPTIMIZER_SYSTEM,
     provider: LLMProvider | None = None,
+    parent_scores: dict[str, float] | None = None,
 ) -> str:
     """Use the model to propose a new prompt based on evaluation results."""
     # Build summary of results
@@ -1299,8 +1315,12 @@ def _propose_prompt_modification(
             continue
         pr = case_result["pass_rate"]
         status = "PASS" if pr == 1.0 else "WEAK" if pr >= 0.5 else "FAIL"
+        delta_str = ""
+        if parent_scores is not None:
+            delta = pr - parent_scores.get(case_id, 0)
+            delta_str = f", delta={delta:+.0%}"
         summary_parts.append(
-            f"[{status}] {case_id} (pass_rate={case_result['pass_rate']:.0%})\n"
+            f"[{status}] {case_id} (pass_rate={case_result['pass_rate']:.0%}{delta_str})\n"
             f"  User prompt: {case_def['user_prompt']}\n"
             f"  Expected: {json.dumps(case_def['expected_actions'])}\n"
             f"  Actual sequences: "
@@ -1385,6 +1405,88 @@ def _simple_diff(old: str, new: str) -> str:
     return "".join(diff)
 
 
+# ─── Evolution tree helpers ───────────────────────────────────────────────────
+
+
+def _ucb_select(nodes: dict[int, EvolutionNode], c: float) -> int:
+    """Select the node with highest UCB1 score.
+
+    Unvisited nodes (visit_count == 0) are selected first, in creation order.
+    N (total plays) is the sum of all visit counts across nodes.
+    """
+    best_id = 0
+    best_score = -1.0
+    total_visits = sum(n.visit_count for n in nodes.values())
+    log_n = math.log(total_visits) if total_visits > 1 else 0.0
+    for nid in sorted(nodes):
+        node = nodes[nid]
+        if node.visit_count == 0:
+            return nid
+        exploit = node.score
+        explore = c * math.sqrt(log_n / node.visit_count)
+        ucb = exploit + explore
+        if ucb > best_score:
+            best_score = ucb
+            best_id = nid
+    return best_id
+
+
+def _node_to_dict(node: EvolutionNode) -> dict[str, Any]:
+    """Serialize an EvolutionNode for JSON output."""
+    return {
+        "node_id": node.node_id,
+        "parent_id": node.parent_id,
+        "prompt": node.prompt,
+        "score": node.score,
+        "visit_count": node.visit_count,
+        "children": node.children,
+        "iteration": node.iteration,
+    }
+
+
+def _filter_for_optimizer(
+    cases: list[dict[str, Any]],
+    iter_result: dict[str, Any],
+    holdout_ids: set[str],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Strip holdout cases from optimizer feedback, including aggregates."""
+    if not holdout_ids:
+        return cases, iter_result
+    filtered_cases = [c for c in cases if c["id"] not in holdout_ids]
+    filtered_case_results = {
+        cid: cr for cid, cr in iter_result["cases"].items() if cid not in holdout_ids
+    }
+    # Recompute aggregate from non-holdout cases only so no holdout signal leaks
+    total_runs = sum(len(cr["runs"]) for cr in filtered_case_results.values())
+    total_passes = sum(
+        sum(1 for r in cr["runs"] if r["pass"]) for cr in filtered_case_results.values()
+    )
+    filtered_result = dict(iter_result)
+    filtered_result["cases"] = filtered_case_results
+    filtered_result["aggregate"] = {
+        **iter_result["aggregate"],
+        "overall_pass_rate": total_passes / total_runs if total_runs else 0,
+        "overall_avg_score": (
+            sum(cr["avg_score"] for cr in filtered_case_results.values())
+            / len(filtered_case_results)
+            if filtered_case_results
+            else 0
+        ),
+        "per_case_pass_rates": {cid: cr["pass_rate"] for cid, cr in filtered_case_results.items()},
+    }
+    return filtered_cases, filtered_result
+
+
+def _compute_holdout_score(iter_result: dict[str, Any], holdout_ids: set[str]) -> float:
+    """Compute pass rate from holdout cases only (or all if no holdout)."""
+    cases = iter_result.get("cases", {})
+    if holdout_ids:
+        rates = [cr["pass_rate"] for cid, cr in cases.items() if cid in holdout_ids]
+    else:
+        rates = [cr["pass_rate"] for cr in cases.values()]
+    return sum(rates) / len(rates) if rates else 0.0
+
+
 # ─── Summary & reporting ─────────────────────────────────────────────────────
 
 
@@ -1453,9 +1555,15 @@ def _append_summary_tsv(path: str, iter_result: dict[str, Any], case_ids: list[s
 
     with open(path, "a") as f:
         if write_header:
-            cols = ["iter", "timestamp", "pass_rate", "avg_score", "runs", "json_dumps"] + [
-                f"case:{cid}" for cid in case_ids
-            ]
+            cols = [
+                "iter",
+                "timestamp",
+                "pass_rate",
+                "avg_score",
+                "runs",
+                "json_dumps",
+                "tree_node",
+            ] + [f"case:{cid}" for cid in case_ids]
             f.write("\t".join(cols) + "\n")
 
         vals = [
@@ -1465,6 +1573,7 @@ def _append_summary_tsv(path: str, iter_result: dict[str, Any], case_ids: list[s
             f"{agg.get('overall_avg_score', 0):.2f}",
             str(agg.get("total_runs", 0)),
             str(agg.get("json_dumps", 0)),
+            str(iter_result.get("tree_node_id", "")),
         ] + [f"{per_case.get(cid, 0):.2f}" for cid in case_ids]
         f.write("\t".join(vals) + "\n")
 
@@ -1493,8 +1602,14 @@ def run_optimization(
     optimizer_model: str | None = None,
     observer_base_url: str | None = None,
     observer_model: str | None = None,
+    explore_constant: float = 1.414,
 ) -> dict[str, Any]:
-    """Main optimization loop.
+    """Main optimization loop with UCB tree search.
+
+    Maintains an evolution tree of prompt variants. Each iteration selects
+    the most promising node via UCB1, evaluates it, then uses the optimizer
+    to propose a child variant. The observer tunes optimizer strategy every
+    3 iterations.
 
     Three separate model roles:
       - test: the model being evaluated (base_url / model)
@@ -1555,6 +1670,16 @@ def run_optimization(
     # Precedence: CLI arg (non-None) > tests.json defaults > code default (3)
     resolved_n_runs: int = n_runs if n_runs is not None else int(defaults.get("n_runs", 3))
 
+    # Holdout split — holdout cases are evaluated but excluded from optimizer feedback
+    holdout_ids: set[str] = {c["id"] for c in cases if c.get("holdout", False)}
+    training_count = len(cases) - len(holdout_ids)
+    if holdout_ids and training_count < 2:
+        _log(
+            f"  Warning: only {training_count} non-holdout cases, disabling holdout split",
+            dim=True,
+        )
+        holdout_ids = set()
+
     # Get initial prompt
     if initial_prompt is None:
         # Extract the default developer message from a temporary ChatSession
@@ -1582,7 +1707,14 @@ def run_optimization(
             initial_prompt,
         ).strip()
 
-    current_prompt = initial_prompt
+    # --- Evolution tree ---
+    nodes: dict[int, EvolutionNode] = {
+        0: EvolutionNode(node_id=0, parent_id=None, prompt=initial_prompt),
+    }
+    next_node_id = 1
+
+    current_optimizer_system = OPTIMIZER_SYSTEM
+
     results: dict[str, Any] = {
         "meta": {
             "model": model,
@@ -1594,11 +1726,13 @@ def run_optimization(
             "started": datetime.now().isoformat(),
             "test_suite": test_file,
             "n_runs_default": resolved_n_runs,
+            "explore_constant": explore_constant,
+            "holdout_ids": sorted(holdout_ids) if holdout_ids else [],
         },
         "iterations": [],
+        "tree": [],
     }
 
-    current_optimizer_system = OPTIMIZER_SYSTEM
     tsv_path = os.path.splitext(output_file)[0] + ".tsv"
     case_ids = [c["id"] for c in cases]
 
@@ -1614,14 +1748,18 @@ def run_optimization(
                 )
                 break
 
+        # UCB select — pick the most promising node to evaluate/extend
+        selected_id = _ucb_select(nodes, explore_constant)
+        selected = nodes[selected_id]
+
         print(f"\n{'=' * 60}")
-        print(f"Iteration {iteration}")
+        print(f"Iteration {iteration} (node {selected_id}, visits={selected.visit_count})")
         print(f"{'=' * 60}")
 
         iter_result = _run_iteration(
             client=client,
             model=model,
-            system_prompt=current_prompt,
+            system_prompt=selected.prompt,
             cases=cases,
             n_runs=resolved_n_runs,
             temperature=temperature,
@@ -1636,14 +1774,26 @@ def run_optimization(
             api_key=api_key,
         )
         iter_result["iteration"] = iteration
-        iter_result["prompt"] = current_prompt
+        iter_result["prompt"] = selected.prompt
         iter_result["prompt_diff"] = None
         iter_result["optimizer_system"] = current_optimizer_system
         iter_result["timestamp"] = datetime.now().isoformat()
+        iter_result["tree_node_id"] = selected_id
+
+        # Update node score (rolling mean)
+        new_score = _compute_holdout_score(iter_result, holdout_ids)
+        if selected.visit_count == 0:
+            selected.score = new_score
+        else:
+            selected.score = (selected.score * selected.visit_count + new_score) / (
+                selected.visit_count + 1
+            )
+        selected.visit_count += 1
 
         results["iterations"].append(iter_result)
 
-        # Write intermediate results
+        # Serialize tree state
+        results["tree"] = [_node_to_dict(n) for n in nodes.values()]
         with open(output_file, "w") as f:
             json.dump(results, f, indent=2)
 
@@ -1658,7 +1808,7 @@ def run_optimization(
 
         # Propose new prompt (skip on last iteration)
         if iteration < max_iterations - 1:
-            # Observer: update optimizer developer prompt every 3 iterations
+            # Observer: update optimizer strategy every 3 iterations
             if iteration >= 2 and iteration % 3 == 2:
                 _log("  Observer updating optimizer prompt...", dim=True)
                 try:
@@ -1673,55 +1823,85 @@ def run_optimization(
                         opt_diff = _simple_diff(current_optimizer_system, new_opt)
                         _log(f"  Observer diff:\n{opt_diff}", dim=True)
                         current_optimizer_system = new_opt
-                        # Reset to the best-performing developer prompt so far.
-                        best_iter = max(
-                            results["iterations"],
-                            key=lambda it: it["aggregate"]["overall_pass_rate"],
-                        )
-                        best_rate = best_iter["aggregate"]["overall_pass_rate"]
-                        best_idx = best_iter["iteration"]
-                        current_prompt = best_iter["prompt"]
-                        _log(
-                            f"  Observer changed strategy → reset developer prompt "
-                            f"to best (iter {best_idx}, {best_rate:.0%})",
-                            dim=True,
-                        )
                     else:
                         _log("  Observer: no changes", dim=True)
                 except Exception as e:
                     _log(f"  Observer error: {e}", dim=True)
+
+            # Build parent scores for improvement-based feedback (delta signal).
+            # Use the parent node's last evaluation, not the current node's.
+            parent_scores: dict[str, float] | None = None
+            if selected.parent_id is not None:
+                for prev_iter in reversed(results["iterations"][:-1]):
+                    if prev_iter.get("tree_node_id") == selected.parent_id:
+                        parent_scores = {
+                            cid: cr["pass_rate"] for cid, cr in prev_iter["cases"].items()
+                        }
+                        break
+
+            # Filter out holdout cases from optimizer feedback
+            opt_cases, opt_result = _filter_for_optimizer(
+                cases,
+                iter_result,
+                holdout_ids,
+            )
 
             print("\nOptimizing prompt...")
             try:
                 new_prompt = _propose_prompt_modification(
                     client=opt_client,
                     model=opt_model,
-                    current_prompt=current_prompt,
-                    test_cases=cases,
-                    iteration_result=iter_result,
+                    current_prompt=selected.prompt,
+                    test_cases=opt_cases,
+                    iteration_result=opt_result,
                     history=results["iterations"],
                     optimizer_system=current_optimizer_system,
                     provider=opt_provider,
+                    parent_scores=parent_scores,
                 )
             except Exception as e:
                 _log(f"  Prompt modification failed: {e}", dim=True)
                 continue
 
-            if new_prompt != current_prompt:
-                diff = _simple_diff(current_prompt, new_prompt)
-                print(f"Prompt modified ({len(current_prompt)} -> {len(new_prompt)} chars)")
+            if new_prompt != selected.prompt:
+                diff = _simple_diff(selected.prompt, new_prompt)
+                print(f"Prompt modified ({len(selected.prompt)} -> {len(new_prompt)} chars)")
                 if diff:
                     print(diff)
                 iter_result["prompt_diff"] = diff
-                # Re-write with the diff included
+
+                # Add child node to evolution tree
+                child = EvolutionNode(
+                    node_id=next_node_id,
+                    parent_id=selected_id,
+                    prompt=new_prompt,
+                    iteration=iteration,
+                    optimizer_system=current_optimizer_system,
+                )
+                nodes[next_node_id] = child
+                selected.children.append(next_node_id)
+                iter_result["tree_child_id"] = next_node_id
+                next_node_id += 1
+
+                # Re-write with tree update and diff
+                results["tree"] = [_node_to_dict(n) for n in nodes.values()]
                 with open(output_file, "w") as f:
                     json.dump(results, f, indent=2)
-                current_prompt = new_prompt
             else:
                 print("Optimizer returned identical prompt. Stopping.")
                 break
 
-    print(f"\nResults written to {output_file}")
+    # Report best node
+    best_node = max(
+        (n for n in nodes.values() if n.visit_count > 0),
+        key=lambda n: n.score,
+        default=nodes[0],
+    )
+    print(
+        f"\nBest node: {best_node.node_id} "
+        f"(score={best_node.score:.2%}, visits={best_node.visit_count})"
+    )
+    print(f"Results written to {output_file}")
     return results
 
 
@@ -1861,6 +2041,12 @@ def main() -> None:
         action="store_true",
         help="Show detailed per-turn logging (API calls, tool args, results)",
     )
+    parser.add_argument(
+        "--explore-constant",
+        type=float,
+        default=1.414,
+        help="UCB exploration constant C (default: sqrt(2) ≈ 1.414)",
+    )
     from turnstone.core.config import add_config_arg, apply_config
 
     add_config_arg(parser)
@@ -1896,6 +2082,7 @@ def main() -> None:
         optimizer_model=args.optimizer_model,
         observer_base_url=args.observer_base_url,
         observer_model=args.observer_model,
+        explore_constant=args.explore_constant,
     )
 
 

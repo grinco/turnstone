@@ -10,15 +10,21 @@ Source: `turnstone/eval.py`
 
 ## Overview
 
-The system works in an iterative loop:
+The system uses UCB tree search to explore prompt variants:
 
-1. Run each test case N times against the current developer prompt.
-2. Score each run by comparing the actual tool call sequence to expected actions.
-3. If not all tests pass, use the model to rewrite the prompt based on failures.
-4. Repeat until all tests pass or max iterations are reached.
+1. Maintain an **evolution tree** of prompt variants, starting from the initial prompt.
+2. Each iteration, **UCB1 selects** the most promising node to evaluate.
+3. Run each test case N times against the selected prompt.
+4. Score each run by comparing the actual tool call sequence to expected actions.
+5. If not all tests pass, use the optimizer model to propose a **child variant**.
+6. Add the child to the tree and repeat until all tests pass or max iterations reached.
 
-When optimization is disabled (`--no-optimize`), only step 1 and 2 execute
-(a single iteration).
+This approach (inspired by [Learning to Self-Evolve](https://arxiv.org/abs/2603.18620))
+prevents irrecoverable collapse from bad edits — UCB naturally backtracks to
+high-scoring ancestors instead of following a linear chain.
+
+When optimization is disabled (`--no-optimize`), only steps 2-4 execute
+(a single iteration evaluating the root node).
 
 ---
 
@@ -65,6 +71,7 @@ Test suites are JSON files with this structure:
 | `match_mode`       | no       | `"ordered_subset"` | How to match actual vs expected actions (see Scoring). |
 | `max_turns`        | no       | `10`               | Maximum conversation turns before stopping. |
 | `n_runs`           | no       | suite default or 3 | Per-case override for number of runs. |
+| `holdout`          | no       | `false`            | If `true`, this case is evaluated but excluded from optimizer feedback. Used to measure progress without overfitting. |
 
 ### Expected Action Specs
 
@@ -194,22 +201,50 @@ real memory store.
 ## Optimization Loop
 
 `run_optimization()` is the main entry point for iterative prompt optimization.
+It uses UCB tree search to explore prompt variants, with an observer that tunes
+the optimizer's strategy.
+
+### Evolution Tree
+
+The optimization maintains a tree of prompt variants (`EvolutionNode`), where
+each node stores its prompt text, aggregated score, and visit count. The root
+node (ID 0) contains the initial prompt.
+
+**UCB1 selection**: Each iteration picks the node with the highest Upper
+Confidence Bound score: `R_bar + C * sqrt(ln(N) / v)`, where `R_bar` is the
+node's mean score, `N` is total visits across all nodes, `v` is the node's
+visit count, and `C` is the exploration constant (`--explore-constant`,
+default sqrt(2)). Unvisited nodes are always selected first.
 
 ### Flow
 
 ```
 for iteration in 0..max_iterations:
-    1. Run all test cases n_runs times with current prompt
-    2. Score and aggregate results
-    3. Save intermediate results to JSON
-    4. If all tests pass -> stop
-    5. Every 3 iterations (at iteration 2, 5, 8, ...):
+    1. UCB select -> pick the most promising tree node
+    2. Run all test cases n_runs times with selected node's prompt
+    3. Update node score (rolling mean) and visit count
+    4. Save intermediate results + tree state to JSON
+    5. If all tests pass -> stop
+    6. Every 3 iterations (at iteration 2, 5, 8, ...):
        -> Observer reviews optimizer strategy
-       -> Reset prompt to best-performing iteration
-    6. Propose new prompt via optimizer model call
-    7. If prompt unchanged -> stop
-    8. Continue with new prompt
+    7. Optimizer proposes new prompt (child of selected node)
+       with improvement-based feedback (delta from parent node)
+    8. Add child node to tree
 ```
+
+### Holdout Cases
+
+Test cases with `"holdout": true` are evaluated every iteration but excluded
+from the optimizer's feedback. This prevents the optimizer from overfitting
+to specific test cases. Node scores are computed from holdout cases only
+(when present). If fewer than 2 non-holdout cases remain, holdout is disabled.
+
+### Improvement-Based Feedback
+
+The optimizer sees delta scores (`delta=+20%`) alongside absolute pass rates,
+showing how each case improved relative to the parent node's evaluation. This
+provides a cleaner signal than absolute scores alone — the optimizer can
+distinguish beneficial edits from harmful ones regardless of starting point.
 
 ### Prompt Proposal (`_propose_prompt_modification`)
 
@@ -235,11 +270,10 @@ Every 3 iterations, a meta-level "observer" reviews the optimizer's strategy:
 - Summarizes the optimizer's behavioral patterns (list style, header usage, length).
 - Uses `OBSERVER_SYSTEM` to rewrite the optimizer's own system prompt.
 - Rejects degenerate outputs (over 200% of input length).
-- After updating the optimizer prompt, resets the developer prompt to the
-  best-performing iteration so far.
-
 This two-level optimization (optimizer + observer) helps the system escape
-local minima and adjust its rewriting strategy.
+local minima and adjust its rewriting strategy. With tree search, the observer
+no longer needs to reset the developer prompt — UCB naturally gravitates
+toward high-scoring nodes.
 
 ### Result Persistence
 
@@ -253,7 +287,9 @@ structure is:
     "base_url": "http://localhost:8000/v1",
     "started": "2025-01-01T00:00:00",
     "test_suite": "tests.json",
-    "n_runs_default": 3
+    "n_runs_default": 3,
+    "explore_constant": 1.414,
+    "holdout_ids": []
   },
   "iterations": [
     {
@@ -262,6 +298,8 @@ structure is:
       "prompt_diff": null,
       "optimizer_system": "the optimizer system prompt",
       "timestamp": "2025-01-01T00:01:00",
+      "tree_node_id": 0,
+      "tree_child_id": 1,
       "cases": {
         "test_name": {
           "runs": [
@@ -289,6 +327,17 @@ structure is:
         "json_dumps": 0,
         "per_case_pass_rates": {"test_name": 1.0, ...}
       }
+    }
+  ],
+  "tree": [
+    {
+      "node_id": 0,
+      "parent_id": null,
+      "prompt": "initial prompt",
+      "score": 0.85,
+      "visit_count": 3,
+      "children": [1, 2],
+      "iteration": 0
     }
   ]
 }
@@ -326,6 +375,7 @@ turnstone-eval tests.json -v                       # verbose per-turn logging
 | `--context-window`  | 131072                        | Context window size. |
 | `--output`          | `eval_results.json`           | Output results file path. |
 | `-v`, `--verbose`   | false                         | Show detailed per-turn logging (API calls, tool args, results). |
+| `--explore-constant` | 1.414 (sqrt(2))              | UCB exploration constant C. Lower values favor exploitation (extend best nodes), higher values favor exploration (try more branches). |
 
 ### Precedence for n_runs
 
