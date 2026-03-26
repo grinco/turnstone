@@ -807,7 +807,11 @@ async def _lifespan(app: Starlette) -> AsyncGenerator[None, None]:
             if not tls_mgr.ca_initialized:
                 await tls_mgr.init_ca()
             hostname = socket.getfqdn()
-            await tls_mgr.issue_console_certs([hostname, "localhost", "127.0.0.1"])
+            cert_hostnames = [hostname, "localhost", "127.0.0.1"]
+            extra_sans = os.environ.get("TURNSTONE_TLS_SANS", "")
+            if extra_sans:
+                cert_hostnames.extend(s.strip() for s in extra_sans.split(",") if s.strip())
+            await tls_mgr.issue_console_certs(cert_hostnames)
             await tls_mgr.start_renewal()
             # Re-create proxy clients with mTLS context now that certs are ready
             client_ctx = tls_mgr.get_client_ssl_context()
@@ -831,6 +835,8 @@ async def _lifespan(app: Starlette) -> AsyncGenerator[None, None]:
                     ),
                     verify=client_ctx,
                 )
+                # Upgrade collector httpx client for mTLS node polling
+                app.state.collector.upgrade_tls(tls_verify=client_ctx)
                 log.info("tls.proxy_clients.upgraded")
         except Exception:
             log.warning("TLS initialization failed — continuing without TLS", exc_info=True)
@@ -5281,7 +5287,19 @@ def main() -> None:
 
     # TLS: initialize manager if enabled
     tls_mgr = None
-    console_url = f"http://{args.host}:{args.port}"
+    # Console URL for service registration — other services use this to discover the console.
+    # Precedence: TURNSTONE_CONSOLE_URL env > auto-detect from bind address.
+    # In Docker Compose, set TURNSTONE_CONSOLE_URL to the service name (e.g. http://console:8090).
+    import socket as _socket
+
+    _console_url_env = os.environ.get("TURNSTONE_CONSOLE_URL", "")
+    if _console_url_env:
+        console_url = _console_url_env
+    else:
+        _advertise_host = args.host
+        if _advertise_host in ("0.0.0.0", "::", ""):
+            _advertise_host = _socket.getfqdn()
+        console_url = f"http://{_advertise_host}:{args.port}"
     if auth_storage:
         try:
             from turnstone.core.config_store import ConfigStore
@@ -5297,7 +5315,9 @@ def main() -> None:
                 import asyncio
 
                 asyncio.run(tls_mgr.init_ca())
-                console_url = f"https://{args.host}:{args.port}"
+                # Upgrade scheme to https if no explicit URL was provided
+                if not _console_url_env:
+                    console_url = console_url.replace("http://", "https://")
                 log.info("TLS enabled")
         except ImportError:
             log.warning("TLS enabled but lacme not installed — pip install turnstone[tls]")

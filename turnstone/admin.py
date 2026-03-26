@@ -155,22 +155,25 @@ def _cmd_tls_bootstrap(args: argparse.Namespace) -> None:
         print("lacme not installed. Run: pip install turnstone[tls]", file=sys.stderr)
         sys.exit(1)
 
+    import contextlib
     import os
     from pathlib import Path
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    os.chmod(out_dir, 0o700)  # Restrict access — contains CA private key
+    with contextlib.suppress(PermissionError):
+        os.chmod(out_dir, 0o700)  # Restrict access — contains CA private key
 
     store = FileStore(str(out_dir))
-    ca = CertificateAuthority(store)
+    ca = CertificateAuthority(store, name="turnstone")
     ca.init(cn="Turnstone CA", validity_days=3650)
     print(f"CA initialized in {out_dir} (permissions: 0700)")
 
     # Write CA cert to a well-known location
     ca_cert_path = out_dir / "ca.pem"
     ca_cert_path.write_bytes(ca.root_cert_pem)
-    os.chmod(ca_cert_path, 0o644)
+    with contextlib.suppress(PermissionError):
+        os.chmod(ca_cert_path, 0o644)
     print(f"CA cert: {ca_cert_path}")
 
     # Issue certs for requested domains
