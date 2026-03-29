@@ -1460,7 +1460,27 @@ class ChatSession:
                 # text would corrupt the payload.
                 _tc_by_id = {c["id"]: c for c in tool_calls}
                 _repeat_detected = False
-                _error_prefixes = ("Error", "JSON parse error", "Unknown tool", "Command timed out")
+                _error_prefixes = (
+                    "Error",
+                    "JSON parse error",
+                    "Unknown tool",
+                    "Command timed out",
+                    "Blocked:",
+                    "Denied",
+                )
+
+                # Clear dedup sigs when a write tool executed successfully —
+                # the state has changed so re-running a read tool is valid.
+                _write_tools = frozenset({"write_file", "edit_file", "bash"})
+                if any(
+                    tc["function"]["name"] in _write_tools
+                    and not any(
+                        cid == tc["id"] and isinstance(out, str) and out.startswith(_error_prefixes)
+                        for cid, out in results
+                    )
+                    for tc in tool_calls
+                ):
+                    self._recent_tool_sigs.clear()
                 for i, (tc_id, output) in enumerate(results):
                     tc = _tc_by_id.get(tc_id)
                     if tc and isinstance(output, str) and not output.startswith(_error_prefixes):
