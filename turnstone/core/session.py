@@ -4301,6 +4301,13 @@ class ChatSession:
             if timed_out.is_set():
                 raise subprocess.TimeoutExpired(cmd="bash", timeout=timeout)
 
+            # Distinguish user cancel from unexpected SIGKILL.
+            # Popen.returncode is negative of the signal number when killed.
+            if cancel.is_set() and proc.returncode == -signal.SIGKILL:
+                msg = "Cancelled by user."
+                self._report_tool_result(call_id, "bash", msg)
+                return call_id, msg
+
             output = "".join(stdout_parts)
             if stderr_lines:
                 tagged = "".join(f"[stderr] {line}" for line in stderr_lines)
