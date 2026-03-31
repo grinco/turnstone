@@ -25,8 +25,8 @@ def main() -> None:
     # -- Server connection ---------------------------------------------------
     parser.add_argument(
         "--server-url",
-        default=os.environ.get("TURNSTONE_SERVER_URL", "http://localhost:8080"),
-        help="Turnstone server URL (default: $TURNSTONE_SERVER_URL or http://localhost:8080)",
+        default=os.environ.get("TURNSTONE_SERVER_URL", ""),
+        help="Turnstone server URL (default: $TURNSTONE_SERVER_URL, or auto-discovered)",
     )
     parser.add_argument(
         "--console-url",
@@ -127,16 +127,27 @@ def main() -> None:
     server_url: str = args.server_url
     console_url: str = args.console_url
 
-    # Auto-discover console from services table if not explicitly set
-    if not console_url:
-        try:
-            from turnstone.core.storage._registry import get_storage as _get_st
+    # Auto-discover console and server from services table.
+    # Retry until services are found — the console/servers may still be
+    # starting up.  If the DB is down the cluster isn't functional anyway.
+    if not console_url or not server_url:
+        import time as _time
 
-            consoles = _get_st().list_services("console", max_age_seconds=3600)
-            if consoles:
-                console_url = consoles[0]["url"]
-        except Exception:
-            pass  # no storage available yet, or no console registered
+        from turnstone.core.storage._registry import get_storage as _get_st
+
+        _disc_storage = _get_st()
+        for _attempt in range(30):  # up to 30s
+            if not console_url:
+                consoles = _disc_storage.list_services("console", max_age_seconds=3600)
+                if consoles:
+                    console_url = consoles[0]["url"]
+            if not server_url:
+                servers = _disc_storage.list_services("server", max_age_seconds=120)
+                if servers:
+                    server_url = servers[0]["url"]
+            if console_url or server_url:
+                break
+            _time.sleep(1)
 
     # -- Adapter selection ---------------------------------------------------
     adapters_configured = False
