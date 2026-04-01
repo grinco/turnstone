@@ -2335,7 +2335,8 @@ class ChatSession:
         """Emit status info via the UI."""
         if not self._last_usage:
             return
-        self.ui.on_status(self._last_usage, self.context_window, self.reasoning_effort)
+        usage: dict[str, Any] = {**self._last_usage, "model": self.model}
+        self.ui.on_status(usage, self.context_window, self.reasoning_effort)
 
     # -- Conversation compaction ------------------------------------------------
 
