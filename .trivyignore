@@ -17,3 +17,8 @@ CVE-2026-27135
 # Affects libsystemd0, libudev1
 # https://avd.aquasec.com/nvd/cve-2026-29111
 CVE-2026-29111
+
+# glibc iconv() DoS — fix_deferred, no patched libc in Debian 13 yet
+# Affects libc-bin, libc6
+# https://avd.aquasec.com/nvd/cve-2026-4046
+CVE-2026-4046
