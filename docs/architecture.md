@@ -1016,13 +1016,10 @@ limits using a token-bucket algorithm. Each IP gets a `TokenBucket` with
 Turnstone supports three authentication mechanisms, unified behind an
 `AuthResult` dataclass that carries `user_id`, `scopes`, and `token_source`:
 
-1. **Config-file tokens** — static secrets in `config.toml` `[[auth.tokens]]`
-   or the `TURNSTONE_AUTH_TOKEN` env var. Validated in-memory via
-   `hmac.compare_digest`. Map to scopes through their role (`read` or `full`).
-2. **API tokens** — database-backed, prefixed `ts_`, stored as SHA-256 hashes
+1. **API tokens** — database-backed, prefixed `ts_`, stored as SHA-256 hashes
    in the `api_tokens` table. Can be exchanged for JWTs via
    `POST /v1/api/auth/login`.
-3. **JWTs** — short-lived HMAC-SHA256 session tokens (default 24h) issued after
+2. **JWTs** — short-lived HMAC-SHA256 session tokens (default 24h) issued after
    successful credential validation. Contain `sub` (user_id), `scopes`, and
    `src` (origin) in claims.
 
@@ -1046,9 +1043,8 @@ Three hierarchical scopes control endpoint access:
 2. **Token extraction** — `Authorization: Bearer <token>` header first, then
    `turnstone_auth` cookie as fallback.
 3. **Token type detection** — dots in the token indicate JWT; `ts_` prefix
-   indicates API token; otherwise config-file token.
-4. **Validation** — JWT signature check, API token hash lookup in storage, or
-   config-token hmac comparison.
+   indicates API token.
+4. **Validation** — JWT signature check or API token hash lookup in storage.
 5. **Scope check** — `required_scope(method, path)` determines the minimum
    scope; the request is rejected with 403 if the token lacks it.
 6. **Context propagation** — on success, `ctx_user_id` is set so structured

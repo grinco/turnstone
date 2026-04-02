@@ -8,23 +8,6 @@ credentials while individual server nodes validate JWTs locally.
 
 ## Token Types
 
-### Config-file tokens
-
-Static tokens defined in `config.toml` or the `TURNSTONE_AUTH_TOKEN`
-environment variable. Validated in-memory using `hmac.compare_digest`
-(timing-safe). Each token maps to a role that determines its scopes.
-
-```toml
-[[auth.tokens]]
-value = "tok_legacy"
-role = "full"     # full → {read, write, approve}
-```
-
-Role mappings: `"read"` → `{read}`, `"full"` → `{read, write, approve}`.
-
-Config tokens are sent directly as `Authorization: Bearer tok_legacy`
-on every request. No JWT exchange is needed.
-
 ### API tokens
 
 Database-backed tokens prefixed with `ts_`. Created via the admin CLI
@@ -149,15 +132,6 @@ The API token is hashed, looked up in the database, and exchanged for a
 JWT with the token's scopes. This is the recommended flow for SDKs and
 automated clients that need cookie-based sessions.
 
-### Config-file tokens (direct)
-
-Config tokens are validated per-request via `hmac.compare_digest`. No
-login exchange is needed — include the token as a `Bearer` header:
-
-```
-Authorization: Bearer tok_legacy
-```
-
 ### First-time setup
 
 When no users exist in the database:
@@ -276,7 +250,7 @@ Setting `TURNSTONE_OIDC_PASSWORD_ENABLED=false` hides the password
 form on the login page and blocks password-based login at the API
 level. The setup wizard always works regardless of this setting — the
 first admin user is created with a password before OIDC is relevant.
-API tokens and config-file tokens are unaffected by this setting.
+API tokens are unaffected by this setting.
 
 #### Known limitations
 
@@ -297,8 +271,6 @@ and classifies the token:
 
 1. **Contains `.`** → JWT → validate HS256 signature and expiry
 2. **Starts with `ts_`** → API token → SHA-256 hash, database lookup
-3. **Otherwise** → config-file token → `hmac.compare_digest` against
-   each configured token
 
 If a session cookie is present and no `Authorization` header is sent,
 the cookie value is treated as a JWT (step 1).
@@ -332,16 +304,10 @@ deployments.
 | Signing secret | `[auth] jwt_secret` | `TURNSTONE_JWT_SECRET` | Auto-generated ephemeral (warning logged) |
 | Expiry | `[auth] jwt_expiry_hours` | — | 24 hours |
 | Algorithm | — | — | HS256 (not configurable) |
-| Minimum secret length | — | — | 32 characters (warning if shorter) |
+| Minimum secret length | — | — | 32 characters (exits if shorter) |
 
-All service nodes that need to validate JWTs must share the same signing
-secret. If no secret is configured, an ephemeral key is generated at
-startup and a warning is logged — JWTs will not survive restarts or work
-across nodes.
-
-The console **requires** `TURNSTONE_JWT_SECRET` when no `--auth-token`
-is provided. It exits with an error if the secret is missing, since
-ephemeral secrets would silently break inter-service communication.
+All services require `TURNSTONE_JWT_SECRET` and exit at startup if it is
+missing or shorter than 32 characters.
 
 ---
 
@@ -442,16 +408,15 @@ Console (cluster-wide)              Server (per-node)
 ┌──────────────────────┐           ┌──────────────────────┐
 │ User/Token CRUD (DB) │           │ JWT validation only  │
 │ Login: creds → JWT   │           │ (shared signing key) │
-│ Admin API endpoints  │           │ Config tokens: hmac  │
-│ Storage: users,      │           │ No auth DB needed    │
+│ Admin API endpoints  │           │ No auth DB needed    │
+│ Storage: users,      │           │                      │
 │   api_tokens tables  │           │                      │
 └──────────────────────┘           └──────────────────────┘
 ```
 
 The console owns the credential database and handles all user/token
 CRUD.  Individual server nodes only need the JWT signing secret to
-validate session tokens.  Config-file tokens are validated locally
-without any database.
+validate session tokens.
 
 ### Proxy auth forwarding
 
@@ -478,8 +443,7 @@ distinguish proxied requests from direct logins in audit logs.
 
 When no user context is available (auth disabled, or internal requests),
 the proxy falls back to a `ServiceTokenManager` with service identity
-`console-proxy` and full scopes.  If `--auth-token` is provided, that
-static token is used as a final fallback.
+`console-proxy` and full scopes.
 
 ### Service-to-service authentication
 
@@ -518,22 +482,17 @@ channel gateway endpoint, and vice versa.
 
 ```toml
 [auth]
-enabled = true
 jwt_secret = "your-secret-key-here"
 jwt_expiry_hours = 24
-
-[[auth.tokens]]
-value = "tok_legacy"
-role = "full"
 ```
 
 ### Environment variables
 
+Auth is always enabled. `TURNSTONE_JWT_SECRET` is required.
+
 | Variable | Description |
 |----------|-------------|
-| `TURNSTONE_AUTH_ENABLED=1` | Enable authentication |
-| `TURNSTONE_AUTH_TOKEN=tok_xxx` | Register a config-file token with `full` access |
-| `TURNSTONE_JWT_SECRET=xxx` | JWT signing secret (must match across nodes) |
+| `TURNSTONE_JWT_SECRET=xxx` | JWT signing secret (required, must match across nodes) |
 | `TURNSTONE_CORS_ORIGINS=` | CORS allowed origins (comma-separated; empty = same-origin only) |
 
 ---
@@ -571,8 +530,6 @@ and browsers enforce same-origin policy.
 
 ## Security Properties
 
-- **Timing-safe comparison** for config-file tokens via
-  `hmac.compare_digest` — no timing side-channel.
 - **Hash-based lookup** for API tokens — the database stores only
   SHA-256 hashes, eliminating timing attacks on token comparison.
 - **Local JWT validation** — no network call or database query needed

@@ -265,9 +265,19 @@ def _cmd_tls_list(args: argparse.Namespace) -> None:
 
     url = f"{console_url}/v1/api/admin/tls/certs"
     headers = {}
-    token = getattr(args, "auth_token", "") or _get_config_token()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    # Prefer JWT via ServiceTokenManager when JWT secret is available
+    jwt_secret = os.environ.get("TURNSTONE_JWT_SECRET", "").strip()
+    if jwt_secret:
+        from turnstone.core.auth import JWT_AUD_CONSOLE, ServiceTokenManager
+
+        mgr = ServiceTokenManager(
+            user_id="admin-cli",
+            scopes=frozenset({"read", "write", "approve", "service"}),
+            source="cli",
+            secret=jwt_secret,
+            audience=JWT_AUD_CONSOLE,
+        )
+        headers["Authorization"] = f"Bearer {mgr.token}"
     resp = httpx.get(url, headers=headers)
     resp.raise_for_status()
     data = resp.json()
@@ -281,20 +291,6 @@ def _cmd_tls_list(args: argparse.Namespace) -> None:
     print("-" * 74)
     for c in certs:
         print(f"{c['domain']:<30s} {c['issued_at']:<22s} {c['expires_at']:<22s}")
-
-
-def _get_config_token() -> str:
-    """Try to load auth token from config.toml or environment."""
-    token = os.environ.get("TURNSTONE_AUTH_TOKEN", "")
-    if token:
-        return token
-    try:
-        from turnstone.core.config import load_config
-
-        cfg = load_config("auth")
-        return str(cfg.get("token", ""))
-    except Exception:
-        return ""
 
 
 def _discover_console_url() -> str:
@@ -381,7 +377,6 @@ def main() -> None:
 
     p_tlslist = sub.add_parser("tls-list", help="List issued certificates")
     p_tlslist.add_argument("--console-url", default="", help="Console URL")
-    p_tlslist.add_argument("--auth-token", default="", help="Auth token for admin API")
 
     args = parser.parse_args()
     if not args.command:

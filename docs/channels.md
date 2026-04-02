@@ -193,7 +193,6 @@ Plan review requests are displayed as a blue embed with:
 | `--auto-approve` | — | `false` | Auto-approve ALL tool calls (skips approval buttons entirely) |
 | `--http-host` | — | `127.0.0.1` | HTTP server bind address for notify endpoint |
 | `--http-port` | `TURNSTONE_CHANNEL_PORT` | `8091` | HTTP server port |
-| `--auth-token` | `TURNSTONE_CHANNEL_AUTH_TOKEN` | — | Static auth token for `/v1/api/notify` (alternative to JWT) |
 | `--log-level` | `TURNSTONE_LOG_LEVEL` | `INFO` | Log level |
 | `--log-format` | `TURNSTONE_LOG_FORMAT` | `auto` | Log format (`auto`/`json`/`text`) |
 
@@ -321,11 +320,11 @@ The `services` table schema:
 ### Security
 
 - **Authentication** — the gateway's `POST /v1/api/notify` endpoint
-  requires authentication. Configure either `TURNSTONE_JWT_SECRET`
-  (the server mints JWTs with `aud: turnstone-channel` automatically)
-  or a static token via `--auth-token`. If neither is set, the
-  gateway fails closed and rejects all requests with 401. Server JWTs
-  (`aud: turnstone-server`) are rejected.
+  requires authentication. Configure `TURNSTONE_JWT_SECRET` so the
+  server can mint JWTs with `aud: turnstone-channel` automatically.
+  If the secret is not set, the gateway fails closed and rejects all
+  requests with 401. Server JWTs (`aud: turnstone-server`) are
+  rejected.
 - **Rate limit** — maximum 5 notifications per turn. The counter only
   increments on successful delivery, so failures don't consume the
   budget.

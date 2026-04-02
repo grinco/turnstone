@@ -1,15 +1,12 @@
 """Bearer token authentication and authorization for turnstone HTTP servers.
 
-Supports three token types:
+Supports two token types:
 
-1. **Config-file tokens** — static tokens in ``config.toml`` or the
-   ``TURNSTONE_AUTH_TOKEN`` env var.  Validated in-memory via
-   ``hmac.compare_digest``.  Map to scopes via their role.
-2. **API tokens** — database-backed, prefixed ``ts_``, stored as SHA-256
+1. **API tokens** — database-backed, prefixed ``ts_``, stored as SHA-256
    hashes.  Exchanged for JWTs via ``/api/auth/login``.
-3. **JWTs** — short-lived session tokens issued after API token validation.
-   Validated locally via shared HMAC-SHA256 secret.  Contain user_id and
-   scopes in claims.
+2. **JWTs** — short-lived session tokens issued after login or by
+   :class:`ServiceTokenManager`.  Validated locally via shared HMAC-SHA256
+   secret.  Contain user_id and scopes in claims.
 
 Public paths (``/``, ``/static/*``, ``/shared/*``, ``/health``, ``/metrics``,
 ``/openapi.json``, ``/docs``, ``/api/auth/login``, ``/api/auth/logout``) are
@@ -19,7 +16,6 @@ always accessible without authentication.
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import os
 import re
@@ -28,7 +24,7 @@ import threading
 import time
 import urllib.parse
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -56,7 +52,7 @@ JWT_AUD_CONSOLE = "turnstone-console"
 JWT_AUD_CHANNEL = "turnstone-channel"
 _MIN_SECRET_LENGTH = 32  # 256 bits minimum for HMAC-SHA256
 
-VALID_SCOPES: frozenset[str] = frozenset({"read", "write", "approve"})
+VALID_SCOPES: frozenset[str] = frozenset({"read", "write", "approve", "service"})
 
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
 USERNAME_MAX_LEN = 64
@@ -72,16 +68,12 @@ def is_valid_username(username: str) -> bool:
 
 
 # Hierarchical: each scope implies all lower scopes.
+# "service" is a superset that grants full access + bypasses RBAC permission checks.
 SCOPE_HIERARCHY: dict[str, frozenset[str]] = {
     "read": frozenset({"read"}),
     "write": frozenset({"read", "write"}),
     "approve": frozenset({"read", "write", "approve"}),
-}
-
-# Map old role names to scope sets.
-_ROLE_TO_SCOPES: dict[str, frozenset[str]] = {
-    "read": frozenset({"read"}),
-    "full": frozenset({"read", "write", "approve"}),
+    "service": frozenset({"read", "write", "approve", "service"}),
 }
 
 # ---------------------------------------------------------------------------
@@ -106,7 +98,7 @@ def _permissions_to_scopes(permissions: set[str]) -> frozenset[str]:
         scopes.add("read")
         return frozenset(scopes)
     for perm in permissions:
-        if perm in VALID_SCOPES:
+        if perm in VALID_SCOPES and perm != "service":
             scopes.update(SCOPE_HIERARCHY.get(perm, {perm}))
     # Any admin.* permission requires access to admin endpoints → approve scope
     if any(p.startswith("admin.") for p in permissions):
@@ -120,15 +112,14 @@ def require_permission(request: Request, permission: str) -> JSONResponse | None
     """Return a 403 JSONResponse if the user lacks *permission*, else None.
 
     Call from admin handlers after the middleware scope check passes.
-    Config-file tokens (no user_id) are treated as full-access.
+    Service tokens (scope ``service``) bypass permission checks.
     """
     from starlette.responses import JSONResponse
 
     auth_result: AuthResult | None = getattr(getattr(request, "state", None), "auth_result", None)
     if auth_result is None:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    # Config-file tokens (no user_id) are treated as full-access
-    if not auth_result.user_id:
+    if auth_result.has_scope("service"):
         return None
     if auth_result.has_permission(permission):
         return None
@@ -200,9 +191,9 @@ def _strip_version_prefix(path: str) -> str:
 class AuthResult:
     """Result of successful authentication."""
 
-    user_id: str  # empty string for config-file tokens
+    user_id: str
     scopes: frozenset[str]
-    token_source: str  # "config", "jwt", "database"
+    token_source: str  # "jwt", "database", "password", or service origin (e.g. "console", "cli")
     permissions: frozenset[str] = frozenset()
 
     def has_scope(self, scope: str) -> bool:
@@ -212,28 +203,6 @@ class AuthResult:
     def has_permission(self, permission: str) -> bool:
         """Return True if this result includes *permission*."""
         return permission in self.permissions
-
-
-# ---------------------------------------------------------------------------
-# AuthConfig (unchanged from before — static config-file tokens)
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class AuthConfig:
-    """Auth configuration loaded once at startup (not modified after creation)."""
-
-    enabled: bool = False
-    tokens: dict[str, str] = field(default_factory=dict)  # token_value → role
-
-    def check(self, token: str | None) -> str | None:
-        """Return the role for a valid config token, or *None*."""
-        if not token:
-            return None
-        for known_token, role in self.tokens.items():
-            if hmac.compare_digest(token, known_token):
-                return role
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +272,11 @@ def parse_scopes(scopes_str: str) -> frozenset[str]:
 
 
 def load_jwt_secret() -> str:
-    """Load JWT signing secret from env or config, or auto-generate."""
+    """Load JWT signing secret from env or config.
+
+    Raises :class:`SystemExit` if no secret is configured.  A JWT secret
+    is required for auth, inter-service communication, and session tokens.
+    """
     secret = os.environ.get("TURNSTONE_JWT_SECRET", "").strip()
     if not secret:
         from turnstone.core.config import load_config
@@ -312,18 +285,19 @@ def load_jwt_secret() -> str:
         secret = str(auth_cfg.get("jwt_secret", "")).strip()
 
     if not secret:
-        # Auto-generate an ephemeral secret
-        secret = secrets.token_hex(32)
-        log.warning(
-            "No JWT secret configured — using ephemeral secret (tokens will not survive restart)"
+        log.error(
+            "TURNSTONE_JWT_SECRET is required but not set. "
+            'Generate one with: python -c "import secrets; print(secrets.token_hex(32))"'
         )
-        return secret
+        raise SystemExit(1)
 
     if len(secret) < _MIN_SECRET_LENGTH:
-        log.warning(
-            "JWT secret is shorter than %d characters — consider using a stronger secret",
+        log.error(
+            "JWT secret must be at least %d characters. "
+            'Generate one with: python -c "import secrets; print(secrets.token_hex(32))"',
             _MIN_SECRET_LENGTH,
         )
+        raise SystemExit(1)
     return secret
 
 
@@ -395,62 +369,6 @@ def validate_jwt(token: str, secret: str, audience: str = "") -> AuthResult | No
         token_source=source,
         permissions=perms,
     )
-
-
-# ---------------------------------------------------------------------------
-# Loading
-# ---------------------------------------------------------------------------
-
-
-def load_auth_config() -> AuthConfig:
-    """Build :class:`AuthConfig` from ``config.toml`` ``[auth]`` + env vars.
-
-    Auth is **enabled by default**.  Set ``[auth] enabled = false`` or
-    ``TURNSTONE_AUTH_ENABLED=0`` to disable.
-
-    Config format::
-
-        [auth]
-        enabled = false   # opt out
-
-        [[auth.tokens]]
-        value = "tok_abc123"
-        role = "full"
-
-    Environment variables:
-
-    - ``TURNSTONE_AUTH_ENABLED=0`` — disables auth
-    - ``TURNSTONE_AUTH_ENABLED=1`` — enables auth (default)
-    - ``TURNSTONE_AUTH_TOKEN=<token>`` — registers a single full-access token
-    """
-    from turnstone.core.config import load_config
-
-    auth_cfg = load_config("auth")
-    enabled = bool(auth_cfg.get("enabled", True))
-    tokens: dict[str, str] = {}
-
-    # Tokens from config file (TOML array-of-tables)
-    for entry in auth_cfg.get("tokens", []):
-        value = entry.get("value", "") if isinstance(entry, dict) else ""
-        role = entry.get("role", "read") if isinstance(entry, dict) else ""
-        if value and role in ("read", "full"):
-            tokens[value] = role
-
-    # Environment variable overrides
-    env_enabled = os.environ.get("TURNSTONE_AUTH_ENABLED", "").strip().lower()
-    if env_enabled in ("1", "true", "yes"):
-        enabled = True
-    elif env_enabled in ("0", "false", "no"):
-        enabled = False
-
-    env_token = os.environ.get("TURNSTONE_AUTH_TOKEN", "").strip()
-    if env_token:
-        tokens[env_token] = "full"
-
-    if enabled and not tokens:
-        log.info("Auth enabled (no config tokens — use /api/auth/setup or turnstone-admin)")
-
-    return AuthConfig(enabled=enabled, tokens=tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -529,7 +447,6 @@ def _extract_proxied_path(normalized: str) -> str | None:
 
 
 def check_request(
-    auth_config: AuthConfig,
     method: str,
     path: str,
     auth_header: str | None,
@@ -539,20 +456,16 @@ def check_request(
     jwt_audience: str = "",
     storage: Any = None,
 ) -> tuple[bool, int, str, AuthResult | None]:
-    """Validate a request against the auth config.
+    """Validate a request.
 
     Checks ``Authorization: Bearer <token>`` first, then falls back to the
     ``turnstone_auth`` cookie.  Token types are auto-detected:
 
     - Contains ``.`` → JWT (validated with *jwt_secret*)
     - Starts with ``ts_`` → API token (looked up in *storage* by hash)
-    - Otherwise → config-file token (hmac check)
 
     Returns ``(allowed, status_code, message, auth_result)``.
     """
-    if not auth_config.enabled:
-        return True, 200, "", None
-
     if is_public_path(path):
         return True, 200, "", None
 
@@ -566,7 +479,7 @@ def check_request(
 
     # Authenticate
     result = _authenticate_token(
-        raw_token, auth_config, jwt_secret=jwt_secret, jwt_audience=jwt_audience, storage=storage
+        raw_token, jwt_secret=jwt_secret, jwt_audience=jwt_audience, storage=storage
     )
     if result is None:
         return False, 401, "Unauthorized: missing or invalid token", None
@@ -581,7 +494,6 @@ def check_request(
 
 def _authenticate_token(
     token: str,
-    auth_config: AuthConfig,
     *,
     jwt_secret: str = "",
     jwt_audience: str = "",
@@ -600,12 +512,6 @@ def _authenticate_token(
     # 2. API token (starts with ts_) — look up in storage
     if token.startswith(TOKEN_PREFIX) and storage is not None:
         return _authenticate_api_token(token, storage)
-
-    # 3. Config-file token (hmac comparison)
-    role = auth_config.check(token)
-    if role is not None:
-        scopes = _ROLE_TO_SCOPES.get(role, frozenset({"read"}))
-        return AuthResult(user_id="", scopes=scopes, token_source="config")
 
     return None
 
@@ -852,7 +758,6 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        auth_config = request.app.state.auth_config
         jwt_secret = getattr(request.app.state, "jwt_secret", "")
         storage = getattr(request.app.state, "auth_storage", None)
         method = request.method
@@ -860,7 +765,6 @@ class AuthMiddleware:
         auth_header = request.headers.get("Authorization")
         cookie_header = request.headers.get("Cookie")
         allowed, status, msg, auth_result = check_request(
-            auth_config,
             method,
             path,
             auth_header,
@@ -904,7 +808,6 @@ async def handle_auth_login(request: Request, audience: str) -> Response:
     except (ValueError, json.JSONDecodeError):
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
-    auth_config = request.app.state.auth_config
     jwt_secret = getattr(request.app.state, "jwt_secret", "")
     storage = getattr(request.app.state, "auth_storage", None)
     login_limiter: LoginRateLimiter | None = getattr(request.app.state, "login_limiter", None)
@@ -955,7 +858,6 @@ async def handle_auth_login(request: Request, audience: str) -> Response:
     elif body.get("token"):
         result = _authenticate_token(
             body["token"],
-            auth_config,
             jwt_secret=jwt_secret,
             jwt_audience=audience,
             storage=storage,
@@ -1011,7 +913,6 @@ async def handle_auth_status(request: Request) -> Response:
     """Shared ``GET /api/auth/status`` handler — login UI state detection."""
     from starlette.responses import JSONResponse
 
-    auth_config = request.app.state.auth_config
     storage = getattr(request.app.state, "auth_storage", None)
 
     has_users = False
@@ -1027,9 +928,9 @@ async def handle_auth_status(request: Request) -> Response:
     oidc_enabled = bool(oidc_config and oidc_config.enabled)
 
     resp: dict[str, Any] = {
-        "auth_enabled": auth_config.enabled,
+        "auth_enabled": True,
         "has_users": has_users,
-        "setup_required": auth_config.enabled and not has_users,
+        "setup_required": not has_users,
     }
     if oidc_enabled and oidc_config is not None:
         resp["oidc_enabled"] = True

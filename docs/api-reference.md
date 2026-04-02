@@ -56,7 +56,7 @@ console.log(result.content);
 
 ## Authentication
 
-When auth is enabled (`[auth].enabled = true` or `TURNSTONE_AUTH_ENABLED=1`), all API endpoints except public paths require a valid token.
+Auth is always enabled. All API endpoints except public paths require a valid token.
 
 ### Sending Credentials
 
@@ -65,15 +65,14 @@ Include a token in one of two ways:
 - **Bearer header**: `Authorization: Bearer <token>`
 - **Cookie**: `turnstone_auth=<token>` (set automatically by the login endpoint)
 
-The server accepts three token types:
+The server accepts two token types:
 
 | Type | Format | Example |
 |------|--------|---------|
 | JWT | Base64 segments separated by dots | `eyJhbG...` |
 | API token | `ts_` prefix + 64 hex chars | `ts_a1b2c3d4...` |
-| Config token | Arbitrary string from `config.toml` | `my-secret-token` |
 
-JWTs are the recommended credential for browser sessions. API tokens are suitable for programmatic access and CI/CD. Config tokens are a simple option for single-node deployments.
+JWTs are the recommended credential for browser sessions. API tokens are suitable for programmatic access and CI/CD.
 
 ### `POST /v1/api/auth/login`
 

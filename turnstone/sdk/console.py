@@ -4,7 +4,7 @@ Usage::
 
     from turnstone.sdk import TurnstoneConsole
 
-    with TurnstoneConsole("http://localhost:8081", token="tok_xxx") as client:
+    with TurnstoneConsole("http://localhost:8090", token="ts_your_api_token") as client:
         overview = client.overview()
         print(f"Nodes: {overview.nodes}, Workstreams: {overview.workstreams}")
 """
@@ -73,7 +73,7 @@ class AsyncTurnstoneConsole(_BaseClient):
 
     def __init__(
         self,
-        base_url: str = "http://localhost:8081",
+        base_url: str = "http://localhost:8090",
         token: str = "",
         timeout: float = 30.0,
         httpx_client: httpx.AsyncClient | None = None,
@@ -961,14 +961,14 @@ class TurnstoneConsole:
 
     Usage::
 
-        with TurnstoneConsole("http://localhost:8081", token="tok_xxx") as client:
+        with TurnstoneConsole("http://localhost:8090", token="ts_your_api_token") as client:
             overview = client.overview()
             print(f"Nodes: {overview.nodes}")
     """
 
     def __init__(
         self,
-        base_url: str = "http://localhost:8081",
+        base_url: str = "http://localhost:8090",
         token: str = "",
         timeout: float = 30.0,
         ca_cert: str | None = None,

@@ -633,7 +633,7 @@ def _handle_ws_command(
 # ─── Cluster commands ─────────────────────────────────────────────────────
 
 
-def _handle_cluster_command(cmd_line: str, console_url: str | None, auth_token: str = "") -> None:
+def _handle_cluster_command(cmd_line: str, console_url: str | None) -> None:
     """Handle /cluster subcommands querying the turnstone-console API."""
     import httpx
 
@@ -642,8 +642,18 @@ def _handle_cluster_command(cmd_line: str, console_url: str | None, auth_token: 
         return
 
     headers: dict[str, str] = {}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
+    jwt_secret = os.environ.get("TURNSTONE_JWT_SECRET", "").strip()
+    if jwt_secret:
+        from turnstone.core.auth import JWT_AUD_CONSOLE, ServiceTokenManager
+
+        _cluster_token_mgr = ServiceTokenManager(
+            user_id="cli",
+            scopes=frozenset({"read", "write", "approve", "service"}),
+            source="cli",
+            secret=jwt_secret,
+            audience=JWT_AUD_CONSOLE,
+        )
+        headers["Authorization"] = f"Bearer {_cluster_token_mgr.token}"
 
     parts = cmd_line.strip().split()
     sub = parts[1] if len(parts) > 1 else "status"
@@ -969,11 +979,6 @@ def main() -> None:
         help="Turnstone console URL for /cluster commands (e.g., http://localhost:8090)",
     )
     parser.add_argument(
-        "--auth-token",
-        default=os.environ.get("TURNSTONE_AUTH_TOKEN", ""),
-        help="Bearer token for authenticating to turnstone services (default: $TURNSTONE_AUTH_TOKEN)",
-    )
-    parser.add_argument(
         "--mcp-config",
         default=None,
         metavar="PATH",
@@ -1247,7 +1252,7 @@ def main() -> None:
             continue
 
         if user_input.startswith("/cluster"):
-            _handle_cluster_command(user_input, args.console_url, args.auth_token)
+            _handle_cluster_command(user_input, args.console_url)
             continue
 
         active = manager.get_active()

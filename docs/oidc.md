@@ -38,7 +38,7 @@ are set.
 | `TURNSTONE_OIDC_PROVIDER_NAME` | No | `SSO` | Display name for the login button (e.g. "Google", "Okta") |
 | `TURNSTONE_OIDC_ROLE_CLAIM` | No | — | ID token claim containing role/group values (see [Role Mapping](#role-mapping)) |
 | `TURNSTONE_OIDC_ROLE_MAP` | No | — | Mapping from claim values to Turnstone role IDs (see [Role Mapping](#role-mapping)) |
-| `TURNSTONE_OIDC_PASSWORD_ENABLED` | No | `true` | Set to `false` to hide the password form and block all username/password logins (including admin). API tokens and config-file tokens still work. |
+| `TURNSTONE_OIDC_PASSWORD_ENABLED` | No | `true` | Set to `false` to hide the password form and block all username/password logins (including admin). API tokens continue to work. |
 | `TURNSTONE_OIDC_REDIRECT_BASE` | No | — | Externally-reachable origin for the OIDC redirect URI (e.g. `https://app.example.com`). Recommended when running behind a reverse proxy. When unset, derived from the request Host header. |
 
 OIDC is enabled when all three required fields (issuer, client ID, client
@@ -246,10 +246,10 @@ password) before OIDC is enabled. The setup wizard always works
 regardless of this setting because it is only available when zero users
 exist in the database.
 
-API token login (`POST /v1/api/auth/login` with a `ts_` token) and
-config-file tokens (`Authorization: Bearer tok_xxx`) continue to work
-regardless of this setting. OIDC-only mode affects password-based
-authentication only.
+API token login (`POST /v1/api/auth/login` with a `ts_` token)
+continues to work regardless of this setting. JWTs and API tokens are
+the supported authentication methods. OIDC-only mode affects
+password-based authentication only.
 
 ---
 
