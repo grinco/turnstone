@@ -6,6 +6,8 @@ import threading
 from typing import Any
 
 from turnstone.core.providers._openai import OpenAIProvider
+from turnstone.core.providers._openai_chat import OpenAIChatCompletionsProvider
+from turnstone.core.providers._openai_responses import OpenAIResponsesProvider
 from turnstone.core.providers._protocol import (
     CompletionResult,
     LLMProvider,
@@ -19,7 +21,9 @@ __all__ = [
     "CompletionResult",
     "LLMProvider",
     "ModelCapabilities",
+    "OpenAIChatCompletionsProvider",
     "OpenAIProvider",
+    "OpenAIResponsesProvider",
     "StreamChunk",
     "ToolCallDelta",
     "UsageInfo",
@@ -31,15 +35,18 @@ __all__ = [
 
 # Singleton instances (stateless, safe to share)
 _provider_lock = threading.Lock()
-_openai_provider = OpenAIProvider()
+_openai_provider = OpenAIResponsesProvider()
+_openai_compat_provider = OpenAIChatCompletionsProvider()
 _anthropic_provider: LLMProvider | None = None
 
 
 def create_provider(provider_name: str) -> LLMProvider:
     """Return a provider adapter for the given provider name. Thread-safe."""
     global _anthropic_provider  # noqa: PLW0603
-    if provider_name in ("openai", "openai-compatible"):
+    if provider_name == "openai":
         return _openai_provider
+    if provider_name == "openai-compatible":
+        return _openai_compat_provider
     if provider_name == "anthropic":
         with _provider_lock:
             if _anthropic_provider is None:
@@ -99,9 +106,9 @@ def lookup_model_capabilities(provider: str, model: str) -> dict[str, Any] | Non
 def list_known_models(provider: str) -> list[str]:
     """Return the model name prefixes in the static capability table."""
     if provider == "openai":
-        from turnstone.core.providers._openai import _OPENAI_CAPABILITIES
+        from turnstone.core.providers._openai_common import OPENAI_CAPABILITIES
 
-        return sorted(_OPENAI_CAPABILITIES.keys())
+        return sorted(OPENAI_CAPABILITIES.keys())
     if provider == "anthropic":
         from turnstone.core.providers._anthropic import _ANTHROPIC_CAPABILITIES
 
