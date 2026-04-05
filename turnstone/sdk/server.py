@@ -26,6 +26,7 @@ from turnstone.api.server_schemas import (
     CreateWorkstreamResponse,
     DashboardResponse,
     HealthResponse,
+    ListAvailableModelsResponse,
     ListMemoriesResponse,
     ListSavedWorkstreamsResponse,
     ListSkillSummaryResponse,
@@ -86,6 +87,12 @@ class AsyncTurnstoneServer(_BaseClient):
 
     async def dashboard(self) -> DashboardResponse:
         return await self._request("GET", "/v1/api/dashboard", response_model=DashboardResponse)
+
+    async def list_models(self) -> ListAvailableModelsResponse:
+        """GET /v1/api/models — available model aliases and defaults."""
+        return await self._request(
+            "GET", "/v1/api/models", response_model=ListAvailableModelsResponse
+        )
 
     async def create_workstream(
         self,
@@ -466,6 +473,9 @@ class TurnstoneServer:
 
     def dashboard(self) -> DashboardResponse:
         return self._runner.run(self._async.dashboard())
+
+    def list_models(self) -> ListAvailableModelsResponse:
+        return self._runner.run(self._async.list_models())
 
     def create_workstream(
         self,

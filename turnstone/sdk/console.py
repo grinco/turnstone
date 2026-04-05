@@ -24,6 +24,7 @@ from turnstone.api.console_schemas import (
     ImportMcpConfigResponse,
     ListAdminMemoriesResponse,
     ListAuditEventsResponse,
+    ListAvailableModelsResponse,
     ListMcpServersResponse,
     ListOrgsResponse,
     ListRolesResponse,
@@ -183,6 +184,14 @@ class AsyncTurnstoneConsole(_BaseClient):
             "/v1/api/cluster/workstreams/new",
             json_body=body,
             response_model=ConsoleCreateWsResponse,
+        )
+
+    # -- models --------------------------------------------------------------
+
+    async def list_models(self) -> ListAvailableModelsResponse:
+        """GET /v1/api/models — available model aliases and defaults."""
+        return await self._request(
+            "GET", "/v1/api/models", response_model=ListAvailableModelsResponse
         )
 
     # -- routing proxy -------------------------------------------------------
@@ -1049,6 +1058,11 @@ class TurnstoneConsole:
                 user_id=user_id,
             )
         )
+
+    # -- models --------------------------------------------------------------
+
+    def list_models(self) -> ListAvailableModelsResponse:
+        return self._runner.run(self._async.list_models())
 
     # -- routing proxy -------------------------------------------------------
 
