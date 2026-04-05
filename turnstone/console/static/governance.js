@@ -2728,3 +2728,854 @@ function submitEditPromptPolicy() {
       submitBtn.disabled = false;
     });
 }
+
+// ---------------------------------------------------------------------------
+// Judge tab — settings, heuristic rules, output guard patterns
+// ---------------------------------------------------------------------------
+
+var _judgeSettings = [];
+var _judgeHeuristicRules = [];
+var _judgeOGPatterns = [];
+var _judgeModelDefs = [];
+var _chrTrapHandler = null; // create heuristic rule
+var _cogpTrapHandler = null; // create output guard pattern
+var _chrTriggerEl = null;
+var _cogpTriggerEl = null;
+
+// -- Sub-section switcher ---------------------------------------------------
+
+function switchJudgeSection(section) {
+  var sections = document.querySelectorAll(".judge-section");
+  for (var i = 0; i < sections.length; i++) sections[i].style.display = "none";
+  var btns = document.querySelectorAll(".judge-section-btn");
+  for (var i = 0; i < btns.length; i++) {
+    var isActive = btns[i].getAttribute("data-section") === section;
+    btns[i].classList.toggle("active", isActive);
+    btns[i].setAttribute("aria-selected", isActive ? "true" : "false");
+    btns[i].setAttribute("tabindex", isActive ? "0" : "-1");
+  }
+  var target = document.getElementById(section + "-section");
+  if (target) target.style.display = "";
+}
+
+// Arrow key navigation for judge sub-section tabs
+(function () {
+  var switcher = document.querySelector(".judge-section-switcher");
+  if (!switcher) return;
+  switcher.addEventListener("keydown", function (e) {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    var btns = switcher.querySelectorAll(".judge-section-btn");
+    var secs = [];
+    for (var i = 0; i < btns.length; i++)
+      secs.push(btns[i].getAttribute("data-section"));
+    var current = switcher.querySelector(".judge-section-btn.active");
+    var idx = secs.indexOf(current ? current.getAttribute("data-section") : "");
+    if (e.key === "ArrowRight") idx = (idx + 1) % secs.length;
+    else idx = (idx - 1 + secs.length) % secs.length;
+    e.preventDefault();
+    switchJudgeSection(secs[idx]);
+    btns[idx].focus();
+  });
+})();
+
+// -- Load all judge data ----------------------------------------------------
+
+function loadJudgeTab() {
+  loadJudgeSettings();
+  loadJudgeHeuristicRules();
+  loadJudgeOGPatterns();
+  // Load model definitions for the model picker
+  fetch("/api/admin/model-definitions", {
+    credentials: "same-origin",
+    headers: { Authorization: "Bearer " + _adminToken },
+  })
+    .then(function (r) {
+      return r.json();
+    })
+    .then(function (d) {
+      _judgeModelDefs = d.models || [];
+    })
+    .catch(function () {
+      _judgeModelDefs = [];
+    });
+}
+
+// -- Settings section -------------------------------------------------------
+// NOTE: innerHTML usage below is safe — all dynamic values are escaped via
+// _escHtml / escapeHtml before interpolation into the HTML string, and the
+// data originates from our own admin API (authenticated, same-origin).
+
+function loadJudgeSettings() {
+  fetch("/api/admin/judge/settings", {
+    credentials: "same-origin",
+    headers: { Authorization: "Bearer " + _adminToken },
+  })
+    .then(function (r) {
+      return r.json();
+    })
+    .then(function (d) {
+      _judgeSettings = d.settings || [];
+      renderJudgeSettings();
+    })
+    .catch(function () {
+      document.getElementById("judge-settings-container").innerHTML =
+        '<div class="dashboard-empty">Failed to load settings</div>';
+    });
+}
+
+function renderJudgeSettings() {
+  var c = document.getElementById("judge-settings-container");
+  if (!_judgeSettings.length) {
+    c.innerHTML = '<div class="dashboard-empty">No judge settings found</div>';
+    return;
+  }
+  var html = "";
+  for (var i = 0; i < _judgeSettings.length; i++) {
+    var s = _judgeSettings[i];
+    var shortKey = s.key.replace("judge.", "");
+    var inputHtml = "";
+    var currentVal = s.value;
+    var isDefault = s.source === "default";
+
+    if (s.type === "bool") {
+      inputHtml =
+        '<label class="toggle-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">' +
+        '<input type="checkbox" data-key="' +
+        s.key +
+        '" ' +
+        (currentVal ? "checked" : "") +
+        " onchange=\"saveJudgeSetting('" +
+        s.key +
+        '\',this.checked)" style="width:16px;height:16px">' +
+        '<span style="font-size:13px">' +
+        (currentVal ? "Enabled" : "Disabled") +
+        "</span></label>";
+    } else if (s.type === "float") {
+      inputHtml =
+        '<div style="display:flex;gap:8px;align-items:center">' +
+        '<input type="number" step="0.01" data-key="' +
+        s.key +
+        '" value="' +
+        currentVal +
+        '"' +
+        (s.min_value != null ? ' min="' + s.min_value + '"' : "") +
+        (s.max_value != null ? ' max="' + s.max_value + '"' : "") +
+        ' style="width:100px;padding:4px 8px;background:var(--bg);border:1px solid var(--border-strong);color:var(--fg);border-radius:3px">' +
+        '<button class="admin-action-btn" onclick="saveJudgeSettingFromInput(\'' +
+        s.key +
+        "')\">Save</button></div>";
+    } else if (s.is_secret) {
+      inputHtml =
+        '<div style="display:flex;gap:8px;align-items:center">' +
+        '<input type="password" data-key="' +
+        s.key +
+        '" value="' +
+        (currentVal || "") +
+        '" placeholder="(not set)"' +
+        ' style="width:240px;padding:4px 8px;background:var(--bg);border:1px solid var(--border-strong);color:var(--fg);border-radius:3px">' +
+        '<button class="admin-action-btn" onclick="saveJudgeSettingFromInput(\'' +
+        s.key +
+        "')\">Save</button></div>";
+    } else if (shortKey === "model") {
+      // Model picker: select from model definitions
+      inputHtml =
+        '<div style="display:flex;gap:8px;align-items:center">' +
+        '<select data-key="' +
+        s.key +
+        '" onchange="saveJudgeSetting(\'' +
+        s.key +
+        "',this.value)\"" +
+        ' style="width:240px;padding:4px 8px;background:var(--bg);border:1px solid var(--border-strong);color:var(--fg);border-radius:3px">' +
+        '<option value="">(same as session)</option>';
+      for (var m = 0; m < _judgeModelDefs.length; m++) {
+        var md = _judgeModelDefs[m];
+        if (!md.enabled) continue;
+        inputHtml +=
+          '<option value="' +
+          escapeHtml(md.alias) +
+          '"' +
+          (currentVal === md.alias ? " selected" : "") +
+          ">" +
+          escapeHtml(md.alias) +
+          " (" +
+          escapeHtml(md.model) +
+          ")</option>";
+      }
+      // Also allow the current value if it's not in model defs (manual entry)
+      if (
+        currentVal &&
+        !_judgeModelDefs.some(function (md) {
+          return md.alias === currentVal;
+        })
+      ) {
+        inputHtml +=
+          '<option value="' +
+          escapeHtml(currentVal) +
+          '" selected>' +
+          escapeHtml(currentVal) +
+          " (manual)</option>";
+      }
+      inputHtml += "</select></div>";
+    } else {
+      inputHtml =
+        '<div style="display:flex;gap:8px;align-items:center">' +
+        '<input type="text" data-key="' +
+        s.key +
+        '" value="' +
+        escapeHtml(currentVal || "") +
+        '"' +
+        ' style="width:240px;padding:4px 8px;background:var(--bg);border:1px solid var(--border-strong);color:var(--fg);border-radius:3px">' +
+        '<button class="admin-action-btn" onclick="saveJudgeSettingFromInput(\'' +
+        s.key +
+        "')\">Save</button></div>";
+    }
+
+    var resetBtn = !isDefault
+      ? ' <button class="admin-action-btn" style="font-size:11px;padding:2px 6px" onclick="resetJudgeSetting(\'' +
+        s.key +
+        "')\">Reset</button>"
+      : "";
+
+    html +=
+      '<div style="margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--border-strong)">' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">' +
+      '<code style="font-size:13px;color:var(--accent)">' +
+      shortKey +
+      "</code>" +
+      (isDefault
+        ? '<span style="font-size:11px;color:var(--fg-dim)">default</span>'
+        : '<span style="font-size:11px;color:var(--green)">customized</span>') +
+      resetBtn +
+      "</div>" +
+      '<div style="font-size:12px;color:var(--fg-dim);margin-bottom:6px">' +
+      escapeHtml(s.help || s.description) +
+      "</div>" +
+      inputHtml +
+      "</div>";
+  }
+  c.innerHTML = html;
+}
+
+function saveJudgeSetting(key, value) {
+  fetch("/api/admin/judge/settings/" + encodeURIComponent(key), {
+    method: "PUT",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + _adminToken,
+    },
+    body: JSON.stringify({ value: value }),
+  })
+    .then(function (r) {
+      if (!r.ok)
+        return r.json().then(function (d) {
+          throw new Error(d.error || "Failed");
+        });
+      return r.json();
+    })
+    .then(function () {
+      showToast("Setting saved");
+      loadJudgeSettings();
+    })
+    .catch(function (e) {
+      showToast("Error: " + e.message);
+    });
+}
+
+function saveJudgeSettingFromInput(key) {
+  var input = document.querySelector('[data-key="' + key + '"]');
+  if (!input) return;
+  saveJudgeSetting(key, input.value);
+}
+
+function resetJudgeSetting(key) {
+  fetch("/api/admin/judge/settings/" + encodeURIComponent(key), {
+    method: "DELETE",
+    credentials: "same-origin",
+    headers: { Authorization: "Bearer " + _adminToken },
+  })
+    .then(function (r) {
+      if (!r.ok)
+        return r.json().then(function (d) {
+          throw new Error(d.error || "Failed");
+        });
+      return r.json();
+    })
+    .then(function () {
+      showToast("Reset to default");
+      loadJudgeSettings();
+    })
+    .catch(function (e) {
+      showToast("Error: " + e.message);
+    });
+}
+
+// -- Heuristic Rules section ------------------------------------------------
+
+function loadJudgeHeuristicRules() {
+  fetch("/api/admin/judge/heuristic-rules", {
+    credentials: "same-origin",
+    headers: { Authorization: "Bearer " + _adminToken },
+  })
+    .then(function (r) {
+      return r.json();
+    })
+    .then(function (d) {
+      _judgeHeuristicRules = d.rules || [];
+      renderHeuristicRules();
+    })
+    .catch(function () {
+      document.getElementById("judge-heuristic-table-container").innerHTML =
+        '<div class="dashboard-empty">Failed to load rules</div>';
+    });
+}
+
+function renderHeuristicRules() {
+  var c = document.getElementById("judge-heuristic-table-container");
+  if (!_judgeHeuristicRules.length) {
+    c.innerHTML = '<div class="dashboard-empty">No rules found</div>';
+    return;
+  }
+  var html = "";
+  for (var i = 0; i < _judgeHeuristicRules.length; i++) {
+    var r = _judgeHeuristicRules[i];
+    var sourceBadge =
+      r.source === "builtin"
+        ? '<span class="scope-badge">built-in</span>'
+        : r.source === "builtin-overridden"
+          ? '<span class="scope-badge scope-scan-safe">overridden</span>'
+          : r.source === "builtin-disabled"
+            ? '<span class="scope-badge scope-deny">disabled</span>'
+            : '<span class="scope-badge scope-write">custom</span>';
+    var statusBadge = r.enabled
+      ? '<span class="scope-badge scope-scan-safe">active</span>'
+      : '<span class="scope-badge scope-deny">disabled</span>';
+    var actions = "";
+    if (r.rule_id) {
+      actions =
+        '<button class="admin-btn-action" onclick="toggleHeuristicRule(\'' +
+        r.rule_id +
+        "\'," +
+        !r.enabled +
+        ')">' +
+        (r.enabled ? "Disable" : "Enable") +
+        "</button> " +
+        '<button class="admin-btn-danger" onclick="deleteHeuristicRule(\'' +
+        r.rule_id +
+        "')\">Delete</button>";
+    } else {
+      actions =
+        '<button class="admin-btn-action" onclick="overrideBuiltinHeuristicRule(\'' +
+        escapeHtml(r.name) +
+        "')\">Customize</button>";
+    }
+    html +=
+      '<div class="admin-row">' +
+      '<span class="admin-col"><code>' +
+      escapeHtml(r.name) +
+      "</code></span>" +
+      '<span class="admin-col admin-col-htier">' +
+      escapeHtml(r.tier || r.risk_level) +
+      "</span>" +
+      '<span class="admin-col admin-col-hrisk">' +
+      escapeHtml(r.risk_level) +
+      "</span>" +
+      '<span class="admin-col"><code>' +
+      escapeHtml(r.tool_pattern) +
+      "</code></span>" +
+      '<span class="admin-col admin-col-hrec">' +
+      escapeHtml(r.recommendation) +
+      "</span>" +
+      '<span class="admin-col">' +
+      sourceBadge +
+      "</span>" +
+      '<span class="admin-col">' +
+      statusBadge +
+      "</span>" +
+      '<span class="admin-col">' +
+      actions +
+      "</span></div>";
+  }
+  c.innerHTML = html;
+}
+
+function toggleHeuristicRule(ruleId, enabled) {
+  fetch("/api/admin/judge/heuristic-rules/" + ruleId, {
+    method: "PUT",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + _adminToken,
+    },
+    body: JSON.stringify({ enabled: enabled }),
+  })
+    .then(function (r) {
+      if (!r.ok)
+        return r.json().then(function (d) {
+          throw new Error(d.error || "Failed");
+        });
+      return r.json();
+    })
+    .then(function () {
+      showToast(enabled ? "Rule enabled" : "Rule disabled");
+      loadJudgeHeuristicRules();
+    })
+    .catch(function (e) {
+      showToast("Error: " + e.message);
+    });
+}
+
+function deleteHeuristicRule(ruleId) {
+  showConfirmModal(
+    "Delete Rule",
+    "Delete this heuristic rule? This action cannot be undone.",
+    "Delete",
+    function () {
+      fetch("/api/admin/judge/heuristic-rules/" + ruleId, {
+        method: "DELETE",
+        credentials: "same-origin",
+        headers: { Authorization: "Bearer " + _adminToken },
+      })
+        .then(function (r) {
+          if (!r.ok)
+            return r.json().then(function (d) {
+              throw new Error(d.error || "Failed");
+            });
+          return r.json();
+        })
+        .then(function () {
+          showToast("Rule deleted");
+          loadJudgeHeuristicRules();
+        })
+        .catch(function (e) {
+          showToast("Error: " + e.message);
+        });
+    },
+  );
+}
+
+function overrideBuiltinHeuristicRule(name) {
+  // Find the built-in rule data
+  var rule = null;
+  for (var i = 0; i < _judgeHeuristicRules.length; i++) {
+    if (_judgeHeuristicRules[i].name === name) {
+      rule = _judgeHeuristicRules[i];
+      break;
+    }
+  }
+  if (!rule) return;
+  // Create a DB copy marked as builtin override, initially disabled
+  var payload = {
+    name: rule.name,
+    risk_level: rule.risk_level,
+    confidence: rule.confidence,
+    recommendation: rule.recommendation,
+    tool_pattern: rule.tool_pattern,
+    arg_patterns: rule.arg_patterns,
+    intent_template: rule.intent_template || "",
+    reasoning_template: rule.reasoning_template || "",
+    tier: rule.tier || rule.risk_level,
+    priority: rule.priority || 0,
+    builtin: true,
+    enabled: false,
+  };
+  fetch("/api/admin/judge/heuristic-rules", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + _adminToken,
+    },
+    body: JSON.stringify(payload),
+  })
+    .then(function (r) {
+      if (!r.ok)
+        return r.json().then(function (d) {
+          throw new Error(d.error || "Failed");
+        });
+      return r.json();
+    })
+    .then(function () {
+      showToast("Built-in rule overridden (disabled)");
+      loadJudgeHeuristicRules();
+    })
+    .catch(function (e) {
+      showToast("Error: " + e.message);
+    });
+}
+
+function showCreateHeuristicRuleModal() {
+  _chrTriggerEl = document.activeElement;
+  var ov = document.getElementById("create-hr-overlay");
+  ov.style.display = "flex";
+  document.getElementById("hr-name").value = "";
+  document.getElementById("hr-tier").value = "medium";
+  document.getElementById("hr-risk").value = "medium";
+  document.getElementById("hr-rec").value = "review";
+  document.getElementById("hr-tool").value = "bash";
+  document.getElementById("hr-args").value = "";
+  document.getElementById("hr-conf").value = "0.8";
+  document.getElementById("hr-intent").value = "";
+  document.getElementById("hr-reason").value = "";
+  document.getElementById("create-hr-error").style.display = "none";
+  document.getElementById("hr-submit").disabled = false;
+  document.getElementById("hr-name").focus();
+  _chrTrapHandler = _installTrap("create-hr-overlay", "create-hr-box");
+}
+
+function hideCreateHRModal() {
+  document.getElementById("create-hr-overlay").style.display = "none";
+  _chrTrapHandler = _removeTrap(_chrTrapHandler);
+  if (_chrTriggerEl && _chrTriggerEl.focus) _chrTriggerEl.focus();
+  _chrTriggerEl = null;
+}
+
+function submitCreateHeuristicRule() {
+  var errEl = document.getElementById("create-hr-error");
+  errEl.style.display = "none";
+  var argsText = document.getElementById("hr-args").value.trim();
+  var argPatterns = argsText
+    ? argsText.split("\n").filter(function (l) {
+        return l.trim();
+      })
+    : [];
+  var payload = {
+    name: document.getElementById("hr-name").value.trim(),
+    tier: document.getElementById("hr-tier").value,
+    risk_level: document.getElementById("hr-risk").value,
+    recommendation: document.getElementById("hr-rec").value,
+    tool_pattern: document.getElementById("hr-tool").value.trim(),
+    arg_patterns: argPatterns,
+    confidence: parseFloat(document.getElementById("hr-conf").value) || 0.8,
+    intent_template: document.getElementById("hr-intent").value.trim(),
+    reasoning_template: document.getElementById("hr-reason").value.trim(),
+    enabled: true,
+  };
+  var btn = document.getElementById("hr-submit");
+  btn.disabled = true;
+  fetch("/api/admin/judge/heuristic-rules", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + _adminToken,
+    },
+    body: JSON.stringify(payload),
+  })
+    .then(function (r) {
+      if (!r.ok)
+        return r.json().then(function (d) {
+          throw new Error(d.error || "Failed");
+        });
+      return r.json();
+    })
+    .then(function () {
+      hideCreateHRModal();
+      showToast("Rule created");
+      loadJudgeHeuristicRules();
+    })
+    .catch(function (e) {
+      errEl.textContent = e.message;
+      errEl.style.display = "";
+    })
+    .finally(function () {
+      btn.disabled = false;
+    });
+}
+
+// -- Output Guard Patterns section ------------------------------------------
+
+function loadJudgeOGPatterns() {
+  fetch("/api/admin/judge/output-guard-patterns", {
+    credentials: "same-origin",
+    headers: { Authorization: "Bearer " + _adminToken },
+  })
+    .then(function (r) {
+      return r.json();
+    })
+    .then(function (d) {
+      _judgeOGPatterns = d.patterns || [];
+      renderOGPatterns();
+    })
+    .catch(function () {
+      document.getElementById("judge-og-table-container").innerHTML =
+        '<div class="dashboard-empty">Failed to load patterns</div>';
+    });
+}
+
+function renderOGPatterns() {
+  var c = document.getElementById("judge-og-table-container");
+  if (!_judgeOGPatterns.length) {
+    c.innerHTML = '<div class="dashboard-empty">No patterns found</div>';
+    return;
+  }
+  var html = "";
+  for (var i = 0; i < _judgeOGPatterns.length; i++) {
+    var p = _judgeOGPatterns[i];
+    var sourceBadge =
+      p.source === "builtin"
+        ? '<span class="scope-badge">built-in</span>'
+        : p.source === "builtin-overridden"
+          ? '<span class="scope-badge scope-scan-safe">overridden</span>'
+          : p.source === "builtin-disabled"
+            ? '<span class="scope-badge scope-deny">disabled</span>'
+            : '<span class="scope-badge scope-write">custom</span>';
+    var statusBadge = p.enabled
+      ? '<span class="scope-badge scope-scan-safe">active</span>'
+      : '<span class="scope-badge scope-deny">disabled</span>';
+    var actions = "";
+    if (p.pattern_id) {
+      actions =
+        '<button class="admin-btn-action" onclick="toggleOGPattern(\'' +
+        p.pattern_id +
+        "\'," +
+        !p.enabled +
+        ')">' +
+        (p.enabled ? "Disable" : "Enable") +
+        "</button> " +
+        '<button class="admin-btn-danger" onclick="deleteOGPattern(\'' +
+        p.pattern_id +
+        "')\">Delete</button>";
+    } else {
+      actions =
+        '<button class="admin-btn-action" onclick="overrideBuiltinOGPattern(\'' +
+        escapeHtml(p.name) +
+        "')\">Customize</button>";
+    }
+    html +=
+      '<div class="admin-row">' +
+      '<span class="admin-col"><code>' +
+      escapeHtml(p.name) +
+      "</code></span>" +
+      '<span class="admin-col">' +
+      escapeHtml(p.category) +
+      "</span>" +
+      '<span class="admin-col admin-col-ogrisk">' +
+      escapeHtml(p.risk_level) +
+      "</span>" +
+      '<span class="admin-col admin-col-ogflag"><code>' +
+      escapeHtml(p.flag_name) +
+      "</code></span>" +
+      '<span class="admin-col">' +
+      sourceBadge +
+      "</span>" +
+      '<span class="admin-col">' +
+      statusBadge +
+      "</span>" +
+      '<span class="admin-col">' +
+      actions +
+      "</span></div>";
+  }
+  c.innerHTML = html;
+}
+
+function toggleOGPattern(patternId, enabled) {
+  fetch("/api/admin/judge/output-guard-patterns/" + patternId, {
+    method: "PUT",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + _adminToken,
+    },
+    body: JSON.stringify({ enabled: enabled }),
+  })
+    .then(function (r) {
+      if (!r.ok)
+        return r.json().then(function (d) {
+          throw new Error(d.error || "Failed");
+        });
+      return r.json();
+    })
+    .then(function () {
+      showToast(enabled ? "Pattern enabled" : "Pattern disabled");
+      loadJudgeOGPatterns();
+    })
+    .catch(function (e) {
+      showToast("Error: " + e.message);
+    });
+}
+
+function deleteOGPattern(patternId) {
+  showConfirmModal(
+    "Delete Pattern",
+    "Delete this output guard pattern? This action cannot be undone.",
+    "Delete",
+    function () {
+      fetch("/api/admin/judge/output-guard-patterns/" + patternId, {
+        method: "DELETE",
+        credentials: "same-origin",
+        headers: { Authorization: "Bearer " + _adminToken },
+      })
+        .then(function (r) {
+          if (!r.ok)
+            return r.json().then(function (d) {
+              throw new Error(d.error || "Failed");
+            });
+          return r.json();
+        })
+        .then(function () {
+          showToast("Pattern deleted");
+          loadJudgeOGPatterns();
+        })
+        .catch(function (e) {
+          showToast("Error: " + e.message);
+        });
+    },
+  );
+}
+
+function overrideBuiltinOGPattern(name) {
+  var pat = null;
+  for (var i = 0; i < _judgeOGPatterns.length; i++) {
+    if (_judgeOGPatterns[i].name === name) {
+      pat = _judgeOGPatterns[i];
+      break;
+    }
+  }
+  if (!pat) return;
+  var payload = {
+    name: pat.name,
+    category: pat.category,
+    risk_level: pat.risk_level,
+    pattern: pat.pattern || "",
+    flag_name: pat.flag_name,
+    annotation: pat.annotation || "",
+    pattern_flags: pat.pattern_flags || "",
+    is_credential: pat.is_credential || false,
+    redact_label: pat.redact_label || "",
+    priority: pat.priority || 0,
+    builtin: true,
+    enabled: false,
+  };
+  fetch("/api/admin/judge/output-guard-patterns", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + _adminToken,
+    },
+    body: JSON.stringify(payload),
+  })
+    .then(function (r) {
+      if (!r.ok)
+        return r.json().then(function (d) {
+          throw new Error(d.error || "Failed");
+        });
+      return r.json();
+    })
+    .then(function () {
+      showToast("Built-in pattern overridden (disabled)");
+      loadJudgeOGPatterns();
+    })
+    .catch(function (e) {
+      showToast("Error: " + e.message);
+    });
+}
+
+function showCreateOutputGuardPatternModal() {
+  _cogpTriggerEl = document.activeElement;
+  var ov = document.getElementById("create-ogp-overlay");
+  ov.style.display = "flex";
+  document.getElementById("ogp-name").value = "";
+  document.getElementById("ogp-cat").value = "prompt_injection";
+  document.getElementById("ogp-risk").value = "medium";
+  document.getElementById("ogp-pattern").value = "";
+  document.getElementById("ogp-flag").value = "";
+  document.getElementById("ogp-ann").value = "";
+  document.getElementById("ogp-flags").value = "";
+  document.getElementById("ogp-cred").checked = false;
+  document.getElementById("ogp-redact").value = "";
+  document.getElementById("ogp-regex-result").textContent = "";
+  document.getElementById("create-ogp-error").style.display = "none";
+  document.getElementById("ogp-submit").disabled = false;
+  document.getElementById("ogp-name").focus();
+  _cogpTrapHandler = _installTrap("create-ogp-overlay", "create-ogp-box");
+}
+
+function hideCreateOGPModal() {
+  document.getElementById("create-ogp-overlay").style.display = "none";
+  _cogpTrapHandler = _removeTrap(_cogpTrapHandler);
+  if (_cogpTriggerEl && _cogpTriggerEl.focus) _cogpTriggerEl.focus();
+  _cogpTriggerEl = null;
+}
+
+function validateOGRegex() {
+  var pattern = document.getElementById("ogp-pattern").value;
+  var resultEl = document.getElementById("ogp-regex-result");
+  if (!pattern) {
+    resultEl.textContent = "";
+    return;
+  }
+  fetch("/api/admin/judge/validate-regex", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + _adminToken,
+    },
+    body: JSON.stringify({ pattern: pattern }),
+  })
+    .then(function (r) {
+      return r.json();
+    })
+    .then(function (d) {
+      if (d.valid) {
+        resultEl.textContent = "Valid";
+        resultEl.style.color = "var(--green)";
+      } else {
+        resultEl.textContent = d.error || "Invalid";
+        resultEl.style.color = "var(--red)";
+      }
+    })
+    .catch(function () {
+      resultEl.textContent = "Validation failed";
+      resultEl.style.color = "var(--red)";
+    });
+}
+
+function submitCreateOGPattern() {
+  var errEl = document.getElementById("create-ogp-error");
+  errEl.style.display = "none";
+  var payload = {
+    name: document.getElementById("ogp-name").value.trim(),
+    category: document.getElementById("ogp-cat").value,
+    risk_level: document.getElementById("ogp-risk").value,
+    pattern: document.getElementById("ogp-pattern").value,
+    flag_name: document.getElementById("ogp-flag").value.trim(),
+    annotation: document.getElementById("ogp-ann").value.trim(),
+    pattern_flags: document.getElementById("ogp-flags").value.trim(),
+    is_credential: document.getElementById("ogp-cred").checked,
+    redact_label: document.getElementById("ogp-redact").value.trim(),
+    enabled: true,
+  };
+  var btn = document.getElementById("ogp-submit");
+  btn.disabled = true;
+  fetch("/api/admin/judge/output-guard-patterns", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + _adminToken,
+    },
+    body: JSON.stringify(payload),
+  })
+    .then(function (r) {
+      if (!r.ok)
+        return r.json().then(function (d) {
+          throw new Error(d.error || "Failed");
+        });
+      return r.json();
+    })
+    .then(function () {
+      hideCreateOGPModal();
+      showToast("Pattern created");
+      loadJudgeOGPatterns();
+    })
+    .catch(function (e) {
+      errEl.textContent = e.message;
+      errEl.style.display = "";
+    })
+    .finally(function () {
+      btn.disabled = false;
+    });
+}
