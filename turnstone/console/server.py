@@ -41,7 +41,13 @@ from turnstone.api.docs import make_docs_handler, make_openapi_handler
 from turnstone.console.collector import ClusterCollector
 from turnstone.console.metrics import ConsoleMetrics
 from turnstone.console.router import ConsoleRouter
-from turnstone.core.auth import JWT_AUD_CONSOLE, JWT_AUD_SERVER, AuthMiddleware, create_jwt
+from turnstone.core.auth import (
+    JWT_AUD_CONSOLE,
+    JWT_AUD_SERVER,
+    AuthMiddleware,
+    create_jwt,
+    jwt_version_slot,
+)
 from turnstone.core.hash_ring import NoAvailableNodeError
 
 if TYPE_CHECKING:
@@ -58,11 +64,17 @@ log = logging.getLogger("turnstone.console.server")
 _STATIC_DIR = Path(__file__).parent / "static"
 _SHARED_DIR = Path(__file__).parent.parent / "shared_static"
 _HTML = ""
+_HTML_ETAG = ""
 
 
 def _load_static() -> None:
-    global _HTML
-    _HTML = (_STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    import hashlib
+
+    from turnstone.core.web_helpers import version_html
+
+    global _HTML, _HTML_ETAG
+    _HTML = version_html((_STATIC_DIR / "index.html").read_text(encoding="utf-8"))
+    _HTML_ETAG = '"' + hashlib.md5(_HTML.encode()).hexdigest()[:16] + '"'  # noqa: S324
 
 
 # ---------------------------------------------------------------------------
@@ -202,8 +214,13 @@ def _pick_best_node(collector: ClusterCollector) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def index(request: Request) -> HTMLResponse:
-    return HTMLResponse(_HTML)
+async def index(request: Request) -> Response:
+    if request.headers.get("If-None-Match") == _HTML_ETAG:
+        return Response(status_code=304, headers={"ETag": _HTML_ETAG, "Cache-Control": "no-cache"})
+    resp = HTMLResponse(_HTML)
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["ETag"] = _HTML_ETAG
+    return resp
 
 
 async def cluster_overview(request: Request) -> JSONResponse:
@@ -908,7 +925,9 @@ async def proxy_index(request: Request) -> Response:
             + "</script>"
         )
         page = page.replace("<body>", "<body>" + banner + _CONSOLE_PROXY_STYLE + shim, 1)
-        return HTMLResponse(page)
+        html_resp = HTMLResponse(page)
+        html_resp.headers["Cache-Control"] = "no-cache"
+        return html_resp
     except httpx.HTTPError as exc:
         log.debug("Proxy index error for %s: %s", node_id, exc)
         return JSONResponse({"error": "Node unreachable"}, status_code=502)
@@ -7440,7 +7459,9 @@ def _build_console_middleware(cors_origins: list[str] | None = None) -> list[Mid
         from turnstone.core.web_helpers import cors_middleware
 
         stack.append(cors_middleware(cors_origins))
-    stack.append(Middleware(AuthMiddleware, jwt_audience=JWT_AUD_CONSOLE))
+    stack.append(
+        Middleware(AuthMiddleware, jwt_audience=JWT_AUD_CONSOLE, jwt_version=jwt_version_slot())
+    )
     return stack
 
 
