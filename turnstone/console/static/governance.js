@@ -2781,15 +2781,12 @@ function switchJudgeSection(section) {
 // -- Load all judge data ----------------------------------------------------
 
 function loadJudgeTab() {
-  loadJudgeSettings();
   loadJudgeHeuristicRules();
   loadJudgeOGPatterns();
-  // Load model definitions for the model picker
-  fetch("/api/admin/model-definitions", {
-    credentials: "same-origin",
-    headers: { Authorization: "Bearer " + _adminToken },
-  })
+  // Load model definitions before settings (settings render needs the model list)
+  authFetch("/v1/api/admin/model-definitions")
     .then(function (r) {
+      if (!r.ok) throw new Error("Failed");
       return r.json();
     })
     .then(function (d) {
@@ -2797,20 +2794,21 @@ function loadJudgeTab() {
     })
     .catch(function () {
       _judgeModelDefs = [];
+    })
+    .finally(function () {
+      loadJudgeSettings();
     });
 }
 
 // -- Settings section -------------------------------------------------------
 // NOTE: innerHTML usage below is safe — all dynamic values are escaped via
-// _escHtml / escapeHtml before interpolation into the HTML string, and the
+// escapeHtml before interpolation into the HTML string, and the
 // data originates from our own admin API (authenticated, same-origin).
 
 function loadJudgeSettings() {
-  fetch("/api/admin/judge/settings", {
-    credentials: "same-origin",
-    headers: { Authorization: "Bearer " + _adminToken },
-  })
+  authFetch("/v1/api/admin/judge/settings")
     .then(function (r) {
+      if (!r.ok) throw new Error("Failed");
       return r.json();
     })
     .then(function (d) {
@@ -2870,7 +2868,7 @@ function renderJudgeSettings() {
         '<input type="password" data-key="' +
         s.key +
         '" value="' +
-        (currentVal || "") +
+        escapeHtml(currentVal || "") +
         '" placeholder="(not set)"' +
         ' style="width:240px;padding:4px 8px;background:var(--bg);border:1px solid var(--border-strong);color:var(--fg);border-radius:3px">' +
         '<button class="admin-action-btn" onclick="saveJudgeSettingFromInput(\'' +
@@ -2948,7 +2946,7 @@ function renderJudgeSettings() {
       resetBtn +
       "</div>" +
       '<div style="font-size:12px;color:var(--fg-dim);margin-bottom:6px">' +
-      escapeHtml(s.help || s.description) +
+      escapeHtml(s.help || s.description || "") +
       "</div>" +
       inputHtml +
       "</div>";
@@ -2957,13 +2955,9 @@ function renderJudgeSettings() {
 }
 
 function saveJudgeSetting(key, value) {
-  fetch("/api/admin/judge/settings/" + encodeURIComponent(key), {
+  authFetch("/v1/api/admin/judge/settings/" + encodeURIComponent(key), {
     method: "PUT",
-    credentials: "same-origin",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + _adminToken,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ value: value }),
   })
     .then(function (r) {
@@ -2989,10 +2983,8 @@ function saveJudgeSettingFromInput(key) {
 }
 
 function resetJudgeSetting(key) {
-  fetch("/api/admin/judge/settings/" + encodeURIComponent(key), {
+  authFetch("/v1/api/admin/judge/settings/" + encodeURIComponent(key), {
     method: "DELETE",
-    credentials: "same-origin",
-    headers: { Authorization: "Bearer " + _adminToken },
   })
     .then(function (r) {
       if (!r.ok)
@@ -3013,11 +3005,9 @@ function resetJudgeSetting(key) {
 // -- Heuristic Rules section ------------------------------------------------
 
 function loadJudgeHeuristicRules() {
-  fetch("/api/admin/judge/heuristic-rules", {
-    credentials: "same-origin",
-    headers: { Authorization: "Bearer " + _adminToken },
-  })
+  authFetch("/v1/api/admin/judge/heuristic-rules")
     .then(function (r) {
+      if (!r.ok) throw new Error("Failed");
       return r.json();
     })
     .then(function (d) {
@@ -3100,13 +3090,9 @@ function renderHeuristicRules() {
 }
 
 function toggleHeuristicRule(ruleId, enabled) {
-  fetch("/api/admin/judge/heuristic-rules/" + ruleId, {
+  authFetch("/v1/api/admin/judge/heuristic-rules/" + ruleId, {
     method: "PUT",
-    credentials: "same-origin",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + _adminToken,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled: enabled }),
   })
     .then(function (r) {
@@ -3131,10 +3117,8 @@ function deleteHeuristicRule(ruleId) {
     "Delete this heuristic rule? This action cannot be undone.",
     "Delete",
     function () {
-      fetch("/api/admin/judge/heuristic-rules/" + ruleId, {
+      authFetch("/v1/api/admin/judge/heuristic-rules/" + ruleId, {
         method: "DELETE",
-        credentials: "same-origin",
-        headers: { Authorization: "Bearer " + _adminToken },
       })
         .then(function (r) {
           if (!r.ok)
@@ -3179,13 +3163,9 @@ function overrideBuiltinHeuristicRule(name) {
     builtin: true,
     enabled: false,
   };
-  fetch("/api/admin/judge/heuristic-rules", {
+  authFetch("/v1/api/admin/judge/heuristic-rules", {
     method: "POST",
-    credentials: "same-origin",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + _adminToken,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   })
     .then(function (r) {
@@ -3253,13 +3233,9 @@ function submitCreateHeuristicRule() {
   };
   var btn = document.getElementById("hr-submit");
   btn.disabled = true;
-  fetch("/api/admin/judge/heuristic-rules", {
+  authFetch("/v1/api/admin/judge/heuristic-rules", {
     method: "POST",
-    credentials: "same-origin",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + _adminToken,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   })
     .then(function (r) {
@@ -3286,11 +3262,9 @@ function submitCreateHeuristicRule() {
 // -- Output Guard Patterns section ------------------------------------------
 
 function loadJudgeOGPatterns() {
-  fetch("/api/admin/judge/output-guard-patterns", {
-    credentials: "same-origin",
-    headers: { Authorization: "Bearer " + _adminToken },
-  })
+  authFetch("/v1/api/admin/judge/output-guard-patterns")
     .then(function (r) {
+      if (!r.ok) throw new Error("Failed");
       return r.json();
     })
     .then(function (d) {
@@ -3370,13 +3344,9 @@ function renderOGPatterns() {
 }
 
 function toggleOGPattern(patternId, enabled) {
-  fetch("/api/admin/judge/output-guard-patterns/" + patternId, {
+  authFetch("/v1/api/admin/judge/output-guard-patterns/" + patternId, {
     method: "PUT",
-    credentials: "same-origin",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + _adminToken,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled: enabled }),
   })
     .then(function (r) {
@@ -3401,10 +3371,8 @@ function deleteOGPattern(patternId) {
     "Delete this output guard pattern? This action cannot be undone.",
     "Delete",
     function () {
-      fetch("/api/admin/judge/output-guard-patterns/" + patternId, {
+      authFetch("/v1/api/admin/judge/output-guard-patterns/" + patternId, {
         method: "DELETE",
-        credentials: "same-origin",
-        headers: { Authorization: "Bearer " + _adminToken },
       })
         .then(function (r) {
           if (!r.ok)
@@ -3447,13 +3415,9 @@ function overrideBuiltinOGPattern(name) {
     builtin: true,
     enabled: false,
   };
-  fetch("/api/admin/judge/output-guard-patterns", {
+  authFetch("/v1/api/admin/judge/output-guard-patterns", {
     method: "POST",
-    credentials: "same-origin",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + _adminToken,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   })
     .then(function (r) {
@@ -3506,16 +3470,13 @@ function validateOGRegex() {
     resultEl.textContent = "";
     return;
   }
-  fetch("/api/admin/judge/validate-regex", {
+  authFetch("/v1/api/admin/judge/validate-regex", {
     method: "POST",
-    credentials: "same-origin",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + _adminToken,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ pattern: pattern }),
   })
     .then(function (r) {
+      if (!r.ok) throw new Error("Validation failed");
       return r.json();
     })
     .then(function (d) {
@@ -3550,13 +3511,9 @@ function submitCreateOGPattern() {
   };
   var btn = document.getElementById("ogp-submit");
   btn.disabled = true;
-  fetch("/api/admin/judge/output-guard-patterns", {
+  authFetch("/v1/api/admin/judge/output-guard-patterns", {
     method: "POST",
-    credentials: "same-origin",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + _adminToken,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   })
     .then(function (r) {
