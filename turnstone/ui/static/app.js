@@ -269,18 +269,26 @@ Pane.prototype.setBusy = function (b) {
     this.sendBtn.classList.remove("queue-mode");
     this.inputEl.placeholder = "Type a message\u2026";
     // Promote queued messages to normal appearance on idle
-    var queuedMsgs = this.messagesEl.querySelectorAll(".msg-queued");
-    for (var i = 0; i < queuedMsgs.length; i++) {
-      queuedMsgs[i].classList.remove("msg-queued", "msg-queued-important");
-      var badge = queuedMsgs[i].querySelector(".queued-badge");
-      if (badge) badge.remove();
-    }
+    this._promoteQueuedMessages();
   }
   this.stopBtn.style.display = b ? "" : "none";
   this.stopBtn.disabled = !b;
   this.stopBtn.textContent = "\u25a0 Stop";
   this.stopBtn.setAttribute("aria-label", "Stop generation");
   delete this.stopBtn.dataset.forceCancel;
+};
+
+Pane.prototype._promoteQueuedMessages = function () {
+  var queuedMsgs = this.messagesEl.querySelectorAll(".msg-queued");
+  for (var i = 0; i < queuedMsgs.length; i++) {
+    var el = queuedMsgs[i];
+    el.classList.remove("msg-queued", "msg-queued-important");
+    delete el.dataset.msgId;
+    var badge = el.querySelector(".queued-badge");
+    if (badge) badge.remove();
+    var dismiss = el.querySelector(".queued-dismiss");
+    if (dismiss) dismiss.remove();
+  }
 };
 
 Pane.prototype.showEmptyState = function () {
@@ -712,11 +720,15 @@ Pane.prototype._dequeueMessage = function (el) {
     .then(function (r) {
       return r.json();
     })
-    .then(function () {
-      el.remove();
+    .then(function (data) {
+      if (data.status === "removed") {
+        el.remove();
+      }
+      // "not_found" means already injected — leave the message visible.
+      // The promote loop will strip the queued styling on idle.
     })
     .catch(function () {
-      el.remove();
+      // Network error — don't remove, message may have been injected
     });
 };
 
